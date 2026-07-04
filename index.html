@@ -785,6 +785,9 @@ async function startCameraBackground() {
   }
 }
 
+// ── 橫直模式 ──────────────────────────────────────────────
+let isLandscape = false; // 預設直式
+
 // ── 啟動（自動執行，不再顯示權限畫面）───────────────────────
 async function startApp() {
   if (typeof DeviceOrientationEvent !== 'undefined' &&
@@ -843,9 +846,6 @@ function stopSensors() {
   window.removeEventListener('deviceorientation', onOrientation);
   window.removeEventListener('devicemotion', onMotion);
 }
-
-// ── 橫直模式 ──────────────────────────────────────────────
-let isLandscape = false; // 預設直式
 
 // ── 模擬搖桿 ──────────────────────────────────────────────
 let joyDragging  = false;
