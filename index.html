@@ -227,6 +227,25 @@
     height: min(150px, calc(var(--joy-size) * 0.68));
     font-size: 1.1rem;
   }
+  /* ── 姿態引導遮罩：進入即時顯示後，需先將手機轉到正確角度才會自動隱藏 ── */
+  #orient-guide {
+    position: fixed; inset: 0; z-index: 500;
+    background: rgba(0,0,0,0.85);
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; opacity: 1; transition: opacity 0.35s ease;
+  }
+  #orient-guide.hidden-guide { opacity: 0; pointer-events: none; }
+  #orient-guide-inner { width: min(360px, 92vw); text-align: center; }
+  #orient-guide-inner img { width: 100%; border-radius: 14px; display: block; margin: 0 auto 20px; }
+  #orient-ring-wrap { position: relative; width: min(190px, 52vw); margin: 0 auto; }
+  #orient-ring { width: 100%; display: block; }
+  #orient-ring-track { stroke: #ef4444; transition: stroke 0.2s ease; }
+  #orient-ring-track.ok { stroke: #22c55e; }
+  #orient-ring-zone { fill: rgba(34,197,94,0.10); stroke: rgba(34,197,94,0.5); }
+  #orient-ring-dot { fill: #ef4444; transition: fill 0.2s ease; }
+  #orient-ring-dot.ok { fill: #22c55e; }
+  #orient-guide-label { margin-top: 12px; font-size: 0.88rem; color: #ddd; }
+  #orient-guide-label.ok { color: #4ade80; }
   /* ── 防螢幕自動旋轉：手機旋回直式時，把橫式 UI 旋轉回來 ── */
   @media screen and (orientation: portrait) {
     body.landscape {
@@ -262,6 +281,21 @@
 <div id="screen-live">
   <button id="orient-btn">切換橫式</button>
   <button id="debug-toggle">調整面板</button>
+
+  <!-- 姿態引導遮罩：手機角度符合要求前持續顯示，符合後自動淡出 -->
+  <div id="orient-guide">
+    <div id="orient-guide-inner">
+      <img src="orientation-guide.png" alt="請垂直拿手機並拍攝地面獲取最佳視角">
+      <div id="orient-ring-wrap">
+        <svg id="orient-ring" viewBox="0 0 200 200">
+          <circle id="orient-ring-track" cx="100" cy="100" r="90" fill="none" stroke-width="8"/>
+          <circle id="orient-ring-zone" cx="100" cy="100" r="36" stroke-width="2"/>
+          <circle id="orient-ring-dot" cx="100" cy="100" r="12"/>
+        </svg>
+      </div>
+      <div id="orient-guide-label">請將手機轉成垂直、螢幕面向自己</div>
+    </div>
+  </div>
 
   <!-- 上半：顯示層 -->
   <div id="display-half">
@@ -689,6 +723,53 @@ function show(id) {
     document.getElementById(s).classList.toggle('hidden', s !== id));
 }
 
+// ── 姿態引導遮罩（手機轉正才隱藏）─────────────────────────
+const ORIENT_GUIDE_TOL   = 30; // 誤差容許範圍（度，β 與 γ 合併計算的向量誤差）
+const ORIENT_RING_R      = 90; // svg 圓環半徑
+const ORIENT_MAX_ERR_EDGE = 70; // 對應到圓環邊緣的誤差角度
+let orientGuideDone = false;
+const orientGuideEl    = document.getElementById('orient-guide');
+const orientGuideLabel = document.getElementById('orient-guide-label');
+const orientRingTrack  = document.getElementById('orient-ring-track');
+const orientRingDot    = document.getElementById('orient-ring-dot');
+
+function resetOrientGuide() {
+  orientGuideDone = false;
+  orientGuideEl.classList.remove('hidden-guide');
+  orientRingTrack.classList.remove('ok');
+  orientRingDot.classList.remove('ok');
+  orientGuideLabel.classList.remove('ok');
+  orientGuideLabel.textContent = '請將手機轉成垂直、螢幕面向自己';
+}
+
+function updateOrientGuide() {
+  if (orientGuideDone) return;
+  const isLandscapeNow = document.body.classList.contains('landscape');
+  const effBeta  = isLandscapeNow ? -cs.orientData.gamma : cs.orientData.beta;
+  const effGamma = isLandscapeNow ?  cs.orientData.beta  : cs.orientData.gamma;
+  const betaErr  = effBeta - 90; // 目標：垂直朝上
+  const gammaErr = effGamma;      // 目標：不左右歪斜
+
+  const scale = ORIENT_RING_R / ORIENT_MAX_ERR_EDGE;
+  let dx = gammaErr * scale;
+  let dy = -betaErr * scale;
+  const dist = Math.hypot(dx, dy);
+  if (dist > ORIENT_RING_R) { dx = dx / dist * ORIENT_RING_R; dy = dy / dist * ORIENT_RING_R; }
+  orientRingDot.setAttribute('cx', 100 + dx);
+  orientRingDot.setAttribute('cy', 100 + dy);
+
+  const ok = Math.hypot(betaErr, gammaErr) <= ORIENT_GUIDE_TOL;
+  orientRingTrack.classList.toggle('ok', ok);
+  orientRingDot.classList.toggle('ok', ok);
+
+  if (ok) {
+    orientGuideDone = true;
+    orientGuideLabel.textContent = '角度符合，準備完成';
+    orientGuideLabel.classList.add('ok');
+    orientGuideEl.classList.add('hidden-guide');
+  }
+}
+
 // ── 開啟手機後置鏡頭，作為背景顯示 ──────────────────────────
 async function startCameraBackground() {
   // 8thWall AR 模式接管鏡頭時跳過 getUserMedia
@@ -716,6 +797,7 @@ async function startApp() {
       return false; // iOS 需要使用者手勢才能請求權限，等待第一次互動再重試
     }
   }
+  resetOrientGuide();
   startSensors();
   startCameraBackground();
   show('screen-live');
@@ -886,6 +968,7 @@ function startDisplayLoop() {
   }, 1000);
 
   displayInterval = setInterval(() => {
+    updateOrientGuide();
     document.getElementById('sb-orient').textContent =
       `姿態：α${cs.orientData.alpha.toFixed(1)}° β${cs.orientData.beta.toFixed(1)}° γ${cs.orientData.gamma.toFixed(1)}°`;
     document.getElementById('sb-accel').textContent =
