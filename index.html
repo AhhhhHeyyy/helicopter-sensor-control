@@ -246,6 +246,7 @@
   #orient-ring-dot.ok { fill: #22c55e; }
   #orient-guide-label { margin-top: 12px; font-size: 0.88rem; color: #ddd; }
   #orient-guide-label.ok { color: #4ade80; }
+  #orient-guide-readout { margin-top: 6px; font-size: 0.78rem; color: #888; font-variant-numeric: tabular-nums; }
   /* ── 防螢幕自動旋轉：手機旋回直式時，把橫式 UI 旋轉回來 ── */
   @media screen and (orientation: portrait) {
     body.landscape {
@@ -294,6 +295,7 @@
         </svg>
       </div>
       <div id="orient-guide-label">請將手機轉成垂直、螢幕面向自己</div>
+      <div id="orient-guide-readout">β 0.0°　γ 0.0°</div>
     </div>
   </div>
 
@@ -723,18 +725,21 @@ function show(id) {
     document.getElementById(s).classList.toggle('hidden', s !== id));
 }
 
-// ── 姿態引導遮罩（手機轉正才隱藏）─────────────────────────
+// ── 姿態引導遮罩（角度不符合時持續顯示，符合後淡出；角度又偏掉則重新出現）───
+// 直升機放置後（window.arPlaced）就不再需要提示，固定隱藏。
+// window.orientGuideOk 提供給 AR 放置點按邏輯判斷「角度是否已符合」。
 const ORIENT_GUIDE_TOL   = 30; // 誤差容許範圍（度，β 與 γ 合併計算的向量誤差）
 const ORIENT_RING_R      = 90; // svg 圓環半徑
 const ORIENT_MAX_ERR_EDGE = 70; // 對應到圓環邊緣的誤差角度
-let orientGuideDone = false;
-const orientGuideEl    = document.getElementById('orient-guide');
-const orientGuideLabel = document.getElementById('orient-guide-label');
-const orientRingTrack  = document.getElementById('orient-ring-track');
-const orientRingDot    = document.getElementById('orient-ring-dot');
+window.orientGuideOk = false;
+const orientGuideEl     = document.getElementById('orient-guide');
+const orientGuideLabel  = document.getElementById('orient-guide-label');
+const orientGuideReadout = document.getElementById('orient-guide-readout');
+const orientRingTrack   = document.getElementById('orient-ring-track');
+const orientRingDot     = document.getElementById('orient-ring-dot');
 
 function resetOrientGuide() {
-  orientGuideDone = false;
+  window.orientGuideOk = false;
   orientGuideEl.classList.remove('hidden-guide');
   orientRingTrack.classList.remove('ok');
   orientRingDot.classList.remove('ok');
@@ -743,12 +748,19 @@ function resetOrientGuide() {
 }
 
 function updateOrientGuide() {
-  if (orientGuideDone) return;
+  if (window.arPlaced) {
+    window.orientGuideOk = false;
+    orientGuideEl.classList.add('hidden-guide');
+    return;
+  }
+
   const isLandscapeNow = document.body.classList.contains('landscape');
   const effBeta  = isLandscapeNow ? -cs.orientData.gamma : cs.orientData.beta;
   const effGamma = isLandscapeNow ?  cs.orientData.beta  : cs.orientData.gamma;
   const betaErr  = effBeta - 90; // 目標：垂直朝上
   const gammaErr = effGamma;      // 目標：不左右歪斜
+
+  orientGuideReadout.textContent = `β ${effBeta.toFixed(1)}°　γ ${effGamma.toFixed(1)}°`;
 
   const scale = ORIENT_RING_R / ORIENT_MAX_ERR_EDGE;
   let dx = gammaErr * scale;
@@ -759,15 +771,12 @@ function updateOrientGuide() {
   orientRingDot.setAttribute('cy', 100 + dy);
 
   const ok = Math.hypot(betaErr, gammaErr) <= ORIENT_GUIDE_TOL;
+  window.orientGuideOk = ok;
   orientRingTrack.classList.toggle('ok', ok);
   orientRingDot.classList.toggle('ok', ok);
-
-  if (ok) {
-    orientGuideDone = true;
-    orientGuideLabel.textContent = '角度符合，準備完成';
-    orientGuideLabel.classList.add('ok');
-    orientGuideEl.classList.add('hidden-guide');
-  }
+  orientGuideLabel.classList.toggle('ok', ok);
+  orientGuideLabel.textContent = ok ? '角度符合，準備完成' : '請將手機轉成垂直、螢幕面向自己';
+  orientGuideEl.classList.toggle('hidden-guide', ok);
 }
 
 // ── 開啟手機後置鏡頭，作為背景顯示 ──────────────────────────
@@ -1049,6 +1058,7 @@ scene.add(dirLight);
 // ── AR 地板偵測：錨點與 Reticle ────────────────────────────
 let arAnchorPos = new THREE.Vector3(0, 0, 0);
 let arPlaced = false;
+window.arPlaced = false; // 同步給姿態引導遮罩讀取（不同 script 作用域）
 
 const reticle = new THREE.Mesh(
   new THREE.RingGeometry(0.08, 0.12, 32).rotateX(-Math.PI / 2),
@@ -1390,13 +1400,15 @@ const _startXR = () => {
   };
 
   // 點按螢幕 → 放置直升機到 reticle 位置（reticle 由 onUpdate 即時更新）
+  // 需同時滿足：地板已偵測到（reticle 可見）＋ 手機角度已符合姿態引導的要求
   renderer.domElement.addEventListener('touchend', (e) => {
     // 避免觸碰搖桿區域時也觸發（搖桿在右下，reticle 需可見才放置）
-    if (reticle.visible && !arPlaced) {
+    if (reticle.visible && !arPlaced && window.orientGuideOk) {
       arAnchorPos.copy(reticle.position);
       // chopperPosDebug.y 會疊加在 arAnchorPos 上，需先扣掉才能讓飛機剛好在地板上方 0.3m
       arAnchorPos.y += 0.001 - chopperPosDebug.y;
       arPlaced = true;
+      window.arPlaced = true;
       reticle.visible = false;
       const h = document.getElementById('ar-place-hint');
       if (h) h.style.display = 'none';
@@ -1409,6 +1421,7 @@ const _startXR = () => {
     e.preventDefault();
     _holdTimer = setTimeout(() => {
       arPlaced = false;
+      window.arPlaced = false;
       const h = document.getElementById('ar-place-hint');
       if (h) h.style.display = '';
     }, 2000);
