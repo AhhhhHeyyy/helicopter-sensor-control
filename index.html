@@ -1112,6 +1112,7 @@ const targetVel      = new THREE.Vector3();
 const headingArrowDir = new THREE.Vector3();
 const smoothedHeadingDir = new THREE.Vector3(0, 0, -1); // 朝向指示棒方向的平滑值，避免搖桿瞬間轉向造成機身瞬間旋轉/位移
 const headingQuat = new THREE.Quaternion(); // 機身顯示朝向：對齊朝向指示棒方向
+const headingEuler = new THREE.Euler();
 const UP_AXIS = new THREE.Vector3(0, 1, 0);
 
 // 朝向指示棒：顯示目前搖桿輸入會飛去的實際方向（無輸入時顯示機身前方）
@@ -1306,8 +1307,17 @@ function animate() {
     if (smoothedHeadingDir.lengthSq() > 1e-6) smoothedHeadingDir.normalize();
 
     // 機身顯示朝向跟隨朝向指示棒（飛行方向），offsetQuat 維持模型的基準校正
-    // 用 slerp 加阻尼，避免搖桿瞬間轉向時機身角度突然跳變
-    headingQuat.setFromUnitVectors(FORWARD_AXIS, smoothedHeadingDir).multiply(offsetQuat);
+    // 用 slerp 加阻尼，避免搖桿瞬間轉向時機身角度突然跳變。
+    // 朝向改用「水平朝向角（yaw，atan2 連續無奇異點）＋ 俯仰角（pitch）」分開計算，
+    // 不直接用 setFromUnitVectors 對齊 3D 方向向量：當飛行方向接近正後方（FORWARD_AXIS
+    // 的反方向）時，setFromUnitVectors 為了對齊向量所選的旋轉軸會因些微上下/左右抖動
+    // 而劇烈跳動（同一瞬間可能選到接近垂直或水平的軸），導致機身像後空翻一樣亂轉；
+    // yaw/pitch 分開算則兩者皆連續平滑，往正後方飛只會是穩定的水平轉向。
+    const headingYaw = Math.atan2(-smoothedHeadingDir.x, -smoothedHeadingDir.z);
+    const headingHorizLen = Math.hypot(smoothedHeadingDir.x, smoothedHeadingDir.z);
+    const headingPitch = Math.atan2(smoothedHeadingDir.y, headingHorizLen);
+    headingEuler.set(headingPitch, headingYaw, 0, 'YXZ');
+    headingQuat.setFromEuler(headingEuler).multiply(offsetQuat);
     chopper.quaternion.slerp(headingQuat, Math.min(1, TURN_DAMPING * delta));
 
     velocity.x = approachValue(velocity.x, targetVel.x, delta);
