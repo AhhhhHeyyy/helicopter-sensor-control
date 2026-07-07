@@ -467,22 +467,22 @@
       <div class="cam-row">
         <label for="chopper-vleash-k">回彈強度(垂直)</label>
         <input type="number" class="cam-max" id="chopper-vleash-k-min" value="0" step="1">
-        <input type="range" id="chopper-vleash-k" min="0" max="150" step="1" value="150">
-        <span id="chopper-vleash-k-val">150</span>
+        <input type="range" id="chopper-vleash-k" min="0" max="150" step="1" value="73">
+        <span id="chopper-vleash-k-val">73</span>
         <input type="number" class="cam-max" id="chopper-vleash-k-max" value="150" step="10">
       </div>
       <div class="cam-row">
         <label for="chopper-vleash-damp">回彈阻尼(垂直)</label>
         <input type="number" class="cam-max" id="chopper-vleash-damp-min" value="0" step="1">
-        <input type="range" id="chopper-vleash-damp" min="0" max="30" step="0.5" value="11">
-        <span id="chopper-vleash-damp-val">11</span>
+        <input type="range" id="chopper-vleash-damp" min="0" max="30" step="0.5" value="15.5">
+        <span id="chopper-vleash-damp-val">15.5</span>
         <input type="number" class="cam-max" id="chopper-vleash-damp-max" value="30" step="5">
       </div>
       <div class="cam-row">
         <label for="chopper-vleash-gain">回彈衝量(垂直)</label>
         <input type="number" class="cam-max" id="chopper-vleash-gain-min" value="0" step="0.1">
-        <input type="range" id="chopper-vleash-gain" min="0" max="100" step="0.1" value="1.4">
-        <span id="chopper-vleash-gain-val">1.4</span>
+        <input type="range" id="chopper-vleash-gain" min="0" max="100" step="0.1" value="31.6">
+        <span id="chopper-vleash-gain-val">31.6</span>
         <input type="number" class="cam-max" id="chopper-vleash-gain-max" value="100" step="10">
       </div>
       <div class="cam-row">
@@ -495,15 +495,15 @@
       <div class="cam-row">
         <label for="chopper-pitch-recoil-damp">角度回彈阻尼</label>
         <input type="number" class="cam-max" id="chopper-pitch-recoil-damp-min" value="0" step="1">
-        <input type="range" id="chopper-pitch-recoil-damp" min="0" max="30" step="0.5" value="10.5">
-        <span id="chopper-pitch-recoil-damp-val">10.5</span>
+        <input type="range" id="chopper-pitch-recoil-damp" min="0" max="30" step="0.5" value="21">
+        <span id="chopper-pitch-recoil-damp-val">21</span>
         <input type="number" class="cam-max" id="chopper-pitch-recoil-damp-max" value="30" step="5">
       </div>
       <div class="cam-row">
         <label for="chopper-pitch-recoil-gain">角度回彈衝量</label>
         <input type="number" class="cam-max" id="chopper-pitch-recoil-gain-min" value="0" step="0.1">
-        <input type="range" id="chopper-pitch-recoil-gain" min="0" max="5" step="0.1" value="1.2">
-        <span id="chopper-pitch-recoil-gain-val">1.2</span>
+        <input type="range" id="chopper-pitch-recoil-gain" min="0" max="5" step="0.1" value="3.7">
+        <span id="chopper-pitch-recoil-gain-val">3.7</span>
         <input type="number" class="cam-max" id="chopper-pitch-recoil-gain-max" value="5" step="1">
       </div>
       <div class="cam-row">
@@ -784,7 +784,7 @@ window.chopperLeashDebug = { stiffness: 40, damping: 9 };
 // ── 機身上升／下沉時的垂直回彈參數（即時調整，獨立於水平拉力）─────
 // gain：垂直速度「變化量」（加減速）轉換成回彈衝量的比例，彈簧目標永遠是 0（真正該在的高度），
 // 只有速度改變的瞬間才踢一下彈簧，飛行中速度穩定時不會有持續偏移，停止後也會準確彈回原位
-window.chopperVertLeashDebug = { stiffness: 150, damping: 11, gain: 1.4 };
+window.chopperVertLeashDebug = { stiffness: 73, damping: 15.5, gain: 31.6 };
 [
   ['chopper-vleash-k', 'stiffness'],
   ['chopper-vleash-damp', 'damping'],
@@ -817,7 +817,7 @@ window.chopperVertLeashDebug = { stiffness: 150, damping: 11, gain: 1.4 };
 // gain：垂直速度「變化量」（加減速）轉換成回彈衝量的比例，只有速度改變（尤其是停止）的
 // 瞬間才會踢一下角度彈簧，彈簧目標永遠是 0（原本角度），所以效果是疊加在目前姿態之外
 // 「先多轉一點，再彈回原本角度」，而不是跟著陀螺儀角度持續同步、不易察覺的穩態偏移
-window.chopperPitchRecoilDebug = { stiffness: 100, damping: 10.5, gain: 1.2 };
+window.chopperPitchRecoilDebug = { stiffness: 100, damping: 21, gain: 3.7 };
 [
   ['chopper-pitch-recoil-k', 'stiffness'],
   ['chopper-pitch-recoil-damp', 'damping'],
