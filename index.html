@@ -479,6 +479,13 @@
         <input type="number" class="cam-max" id="chopper-vleash-damp-max" value="30" step="5">
       </div>
       <div class="cam-row">
+        <label for="chopper-vleash-gain">回彈幅度(垂直)</label>
+        <input type="number" class="cam-max" id="chopper-vleash-gain-min" value="0" step="0.1">
+        <input type="range" id="chopper-vleash-gain" min="0" max="2" step="0.05" value="0.5">
+        <span id="chopper-vleash-gain-val">0.5</span>
+        <input type="number" class="cam-max" id="chopper-vleash-gain-max" value="2" step="0.5">
+      </div>
+      <div class="cam-row">
         <label for="chopper-pivot-x">旋轉中心X</label>
         <input type="number" class="cam-max" id="chopper-pivot-x-min" value="-2.9" step="0.5">
         <input type="range" id="chopper-pivot-x" min="-2.9" max="2" step="0.05" value="-2.9">
@@ -754,11 +761,13 @@ window.chopperLeashDebug = { stiffness: 40, damping: 9 };
 });
 
 // ── 機身上升／下沉時的垂直回彈參數（即時調整，獨立於水平拉力）─────
-// 阻尼刻意調得比水平方向低（欠阻尼），讓垂直移動時有明顯的往回彈反作用力感
-window.chopperVertLeashDebug = { stiffness: 55, damping: 4.5 };
+// gain：目前垂直速度轉換成「回彈位移目標」的比例，飛行中速度不為 0 時會持續有一點位移，
+// 放開／停止時位移目標歸零，欠阻尼的彈簧就會把位移拉回 0，途中順勢往反方向彈一下
+window.chopperVertLeashDebug = { stiffness: 55, damping: 4.5, gain: 0.5 };
 [
   ['chopper-vleash-k', 'stiffness'],
   ['chopper-vleash-damp', 'damping'],
+  ['chopper-vleash-gain', 'gain'],
 ].forEach(([id, prop]) => {
   const input = document.getElementById(id);
   const val   = document.getElementById(id + '-val');
@@ -1167,9 +1176,9 @@ const chopperPosDebug = window.chopperPosDebug;
 const chopperPivotDebug = window.chopperPivotDebug;
 // 箭頭（拉力錨點）沿飛行方向前移的距離（即時調整）
 const chopperArrowOffsetDebug = window.chopperArrowOffsetDebug;
-// 機身被箭頭拉著走的彈簧-阻尼參數（即時調整，水平 x/z）
+// 機身被箭頭拉著走的彈簧-阻尼參數（即時調整，x/y/z 共用）
 const chopperLeashDebug = window.chopperLeashDebug;
-// 機身上升／下沉時的垂直回彈參數（即時調整，僅套用在 y 軸）
+// 機身上升／下沉時額外疊加的垂直回彈參數（即時調整，僅套用在 y 軸的獨立回彈層）
 const chopperVertLeashDebug = window.chopperVertLeashDebug;
 const movePos = new THREE.Vector3(0, 0, 0); // 飛行範圍內的相對位置（不含初始位置偏移）
 
@@ -1209,6 +1218,8 @@ const chopperVisualPos = new THREE.Vector3(); // 機身「被拉著走」的實�
 const chopperVisualVel = new THREE.Vector3(); // 機身視覺位置的慣性速度
 const leashAccel = new THREE.Vector3(); // 彈簧-阻尼系統暫存加速度
 let chopperVisualInit = false; // 是否已初始化機身視覺位置（避免第一幀從原點飛過來）
+let recoilOffsetY = 0; // 垂直回彈層的位移（疊加在 chopper.position.y 上，純視覺效果）
+let recoilVelY = 0;    // 垂直回彈層的速度
 const headingQuat = new THREE.Quaternion(); // 機身顯示朝向：對齊朝向指示棒方向
 const headingEuler = new THREE.Euler();
 const UP_AXIS = new THREE.Vector3(0, 1, 0);
@@ -1454,16 +1465,21 @@ function animate() {
       chopperVisualVel.set(0, 0, 0);
       chopperVisualInit = true;
     }
-    // 水平（x/z）與垂直（y）分開套用不同的彈簧-阻尼係數：
-    // 垂直方向阻尼刻意調低（欠阻尼），上升/下沉時會有明顯的往回彈反作用力感
-    leashAccel.set(
-      (arrowPos.x - chopperVisualPos.x) * chopperLeashDebug.stiffness - chopperVisualVel.x * chopperLeashDebug.damping,
-      (arrowPos.y - chopperVisualPos.y) * chopperVertLeashDebug.stiffness - chopperVisualVel.y * chopperVertLeashDebug.damping,
-      (arrowPos.z - chopperVisualPos.z) * chopperLeashDebug.stiffness - chopperVisualVel.z * chopperLeashDebug.damping
-    );
+    leashAccel.copy(arrowPos).sub(chopperVisualPos).multiplyScalar(chopperLeashDebug.stiffness)
+      .addScaledVector(chopperVisualVel, -chopperLeashDebug.damping);
     chopperVisualVel.addScaledVector(leashAccel, delta);
     chopperVisualPos.addScaledVector(chopperVisualVel, delta);
     chopper.position.copy(chopperVisualPos);
+
+    // 垂直回彈層：位移目標＝目前垂直飛行速度（velocity.y）* 增益，飛行中速度不為 0 時
+    // 機身會持續朝反方向多位移一點（下降時多沉一點、上升時多衝高一點）；
+    // 一旦速度轉為 0（放開搖桿或停止傾斜），目標歸零，欠阻尼彈簧把位移拉回 0，
+    // 過程中順著慣性往反方向彈一下，形成「下降後回彈上升／上升後回彈下沉」的反作用力錯覺
+    const recoilTargetY = velocity.y * chopperVertLeashDebug.gain;
+    const recoilAccelY = (recoilTargetY - recoilOffsetY) * chopperVertLeashDebug.stiffness - recoilVelY * chopperVertLeashDebug.damping;
+    recoilVelY += recoilAccelY * delta;
+    recoilOffsetY += recoilVelY * delta;
+    chopper.position.y += recoilOffsetY;
 
     // 相機固定不跟隨直升機（AR 模式下相機由 8thWall 追蹤接管）
     if (!window._xrActive) {
@@ -1535,6 +1551,8 @@ const _startXR = () => {
       // chopperPosDebug.y 會疊加在 arAnchorPos 上，需先扣掉才能讓飛機剛好在地板上方 0.3m
       arAnchorPos.y += 0.001 - chopperPosDebug.y;
       chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
+      recoilOffsetY = 0;
+      recoilVelY = 0;
       arPlaced = true;
       window.arPlaced = true;
       reticle.visible = false;
