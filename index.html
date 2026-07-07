@@ -486,6 +486,27 @@
         <input type="number" class="cam-max" id="chopper-vleash-gain-max" value="2" step="0.5">
       </div>
       <div class="cam-row">
+        <label for="chopper-pitch-recoil-k">角度回彈強度</label>
+        <input type="number" class="cam-max" id="chopper-pitch-recoil-k-min" value="0" step="1">
+        <input type="range" id="chopper-pitch-recoil-k" min="0" max="100" step="1" value="40">
+        <span id="chopper-pitch-recoil-k-val">40</span>
+        <input type="number" class="cam-max" id="chopper-pitch-recoil-k-max" value="100" step="10">
+      </div>
+      <div class="cam-row">
+        <label for="chopper-pitch-recoil-damp">角度回彈阻尼</label>
+        <input type="number" class="cam-max" id="chopper-pitch-recoil-damp-min" value="0" step="1">
+        <input type="range" id="chopper-pitch-recoil-damp" min="0" max="30" step="0.5" value="4">
+        <span id="chopper-pitch-recoil-damp-val">4</span>
+        <input type="number" class="cam-max" id="chopper-pitch-recoil-damp-max" value="30" step="5">
+      </div>
+      <div class="cam-row">
+        <label for="chopper-pitch-recoil-gain">角度回彈幅度(度)</label>
+        <input type="number" class="cam-max" id="chopper-pitch-recoil-gain-min" value="0" step="1">
+        <input type="range" id="chopper-pitch-recoil-gain" min="0" max="30" step="0.5" value="8">
+        <span id="chopper-pitch-recoil-gain-val">8</span>
+        <input type="number" class="cam-max" id="chopper-pitch-recoil-gain-max" value="30" step="5">
+      </div>
+      <div class="cam-row">
         <label for="chopper-pivot-x">旋轉中心X</label>
         <input type="number" class="cam-max" id="chopper-pivot-x-min" value="-2.9" step="0.5">
         <input type="range" id="chopper-pivot-x" min="-2.9" max="2" step="0.05" value="-2.9">
@@ -776,6 +797,38 @@ window.chopperVertLeashDebug = { stiffness: 55, damping: 4.5, gain: 0.5 };
 
   input.addEventListener('input', () => {
     window.chopperVertLeashDebug[prop] = parseFloat(input.value);
+    val.textContent = input.value;
+  });
+
+  minIn.addEventListener('change', () => {
+    const mn = parseFloat(minIn.value);
+    if (!isFinite(mn)) return;
+    input.min = mn;
+  });
+
+  maxIn.addEventListener('change', () => {
+    const m = parseFloat(maxIn.value);
+    if (!isFinite(m)) return;
+    input.max = m;
+  });
+});
+
+// ── 機身上升／下沉時的角度回彈參數（即時調整，模擬電梯／公車煞車的慣性傾斜感）──
+// gain：目前垂直速度轉換成「回彈角度目標」的比例（度），飛行中速度不為 0 時機身會持續多傾一點角度，
+// 停止時角度目標歸零，欠阻尼彈簧把角度拉回 0，途中會順勢往反方向多轉一點再回正
+window.chopperPitchRecoilDebug = { stiffness: 40, damping: 4, gain: 8 };
+[
+  ['chopper-pitch-recoil-k', 'stiffness'],
+  ['chopper-pitch-recoil-damp', 'damping'],
+  ['chopper-pitch-recoil-gain', 'gain'],
+].forEach(([id, prop]) => {
+  const input = document.getElementById(id);
+  const val   = document.getElementById(id + '-val');
+  const minIn = document.getElementById(id + '-min');
+  const maxIn = document.getElementById(id + '-max');
+
+  input.addEventListener('input', () => {
+    window.chopperPitchRecoilDebug[prop] = parseFloat(input.value);
     val.textContent = input.value;
   });
 
@@ -1180,6 +1233,8 @@ const chopperArrowOffsetDebug = window.chopperArrowOffsetDebug;
 const chopperLeashDebug = window.chopperLeashDebug;
 // 機身上升／下沉時額外疊加的垂直回彈參數（即時調整，僅套用在 y 軸的獨立回彈層）
 const chopperVertLeashDebug = window.chopperVertLeashDebug;
+// 機身上升／下沉時額外疊加的角度回彈參數（即時調整，僅套用在俯仰角的獨立回彈層）
+const chopperPitchRecoilDebug = window.chopperPitchRecoilDebug;
 const movePos = new THREE.Vector3(0, 0, 0); // 飛行範圍內的相對位置（不含初始位置偏移）
 
 const MAX_SPEED  = 1.6;  // 最大移動速度（單位／秒）
@@ -1210,7 +1265,7 @@ const flightRight   = new THREE.Vector3();
 const flightForwardXZ = new THREE.Vector3(); // flightForward 在水平面的投影（搖桿前後方向）
 const flightRightXZ   = new THREE.Vector3(); // flightRight 在水平面的投影（搖桿左右方向）
 const targetVel      = new THREE.Vector3();
-const headingArrowDir = new THREE.Vector3();
+const headingArrowDir = new THREE.Vector3(0, 0, -1); // 初始值需非零，之後只在有輸入時更新，維持「最後一次朝向」
 const smoothedHeadingDir = new THREE.Vector3(0, 0, -1); // 朝向指示棒方向的平滑值，避免搖桿瞬間轉向造成機身瞬間旋轉/位移
 const corePos  = new THREE.Vector3(); // 拉力錨點的邏輯中心（移動範圍中心 + AR 地板錨點）
 const arrowPos = new THREE.Vector3(); // 箭頭實際位置＝corePos 沿飛行方向前移後的位置
@@ -1220,6 +1275,10 @@ const leashAccel = new THREE.Vector3(); // 彈簧-阻尼系統暫存加速度
 let chopperVisualInit = false; // 是否已初始化機身視覺位置（避免第一幀從原點飛過來）
 let recoilOffsetY = 0; // 垂直回彈層的位移（疊加在 chopper.position.y 上，純視覺效果）
 let recoilVelY = 0;    // 垂直回彈層的速度
+let pitchRecoilOffset = 0; // 角度回彈層的俯仰角（弧度，疊加在機身朝向上，純視覺效果）
+let pitchRecoilVel = 0;    // 角度回彈層的角速度
+const chopperBaseQuat = new THREE.Quaternion(); // 機身「基準朝向」：只追朝向指示棒，不含角度回彈層
+const pitchRecoilQuat = new THREE.Quaternion(); // 角度回彈層暫存四元數（每幀依 pitchRecoilOffset 重新計算，不累加）
 const headingQuat = new THREE.Quaternion(); // 機身顯示朝向：對齊朝向指示棒方向
 const headingEuler = new THREE.Euler();
 const UP_AXIS = new THREE.Vector3(0, 1, 0);
@@ -1402,11 +1461,10 @@ function animate() {
       .multiplyScalar(MAX_SPEED);
     targetVel.y = vertInput * MAX_SPEED;
 
-    // 更新朝向指示棒方向：有實際飛行速度（搖桿輸入，含其疊加的傾斜垂直分量）時指向該方向，否則顯示機身前方
+    // 更新朝向指示棒方向：只有實際飛行速度（搖桿輸入，含其疊加的傾斜垂直分量）時才更新方向，
+    // 沒有輸入時維持上一次的朝向（不再自動轉回機身/手機前方，放開搖桿後機身會停在原本朝向）
     if (targetVel.lengthSq() > 1e-6) {
       headingArrowDir.copy(targetVel).normalize();
-    } else {
-      headingArrowDir.copy(flightForward);
     }
     headingArrow.setDirection(headingArrowDir);
 
@@ -1427,7 +1485,9 @@ function animate() {
     const headingPitch = Math.atan2(smoothedHeadingDir.y, headingHorizLen);
     headingEuler.set(headingPitch, headingYaw, 0, 'YXZ');
     headingQuat.setFromEuler(headingEuler).multiply(offsetQuat);
-    chopper.quaternion.slerp(headingQuat, Math.min(1, TURN_DAMPING * delta));
+    // 只更新「基準朝向」，角度回彈層在下面套用時才會疊加到 chopper.quaternion，
+    // 避免回彈的角度被永久疊進基準朝向裡（否則會隨時間累積誤差）
+    chopperBaseQuat.slerp(headingQuat, Math.min(1, TURN_DAMPING * delta));
 
     velocity.x = approachValue(velocity.x, targetVel.x, delta);
     velocity.y = approachValue(velocity.y, targetVel.y, delta);
@@ -1480,6 +1540,17 @@ function animate() {
     recoilVelY += recoilAccelY * delta;
     recoilOffsetY += recoilVelY * delta;
     chopper.position.y += recoilOffsetY;
+
+    // 角度回彈層：跟垂直位移回彈同一套邏輯，但作用在俯仰角上——
+    // 上升/下降時機身多傾一點角度，停止時角度目標歸零、欠阻尼彈簧拉回 0，
+    // 途中會往反方向多轉一點再回正，模擬電梯／公車煞車時的慣性傾斜感
+    // （下降停止：角度微微上揚再回正；上升停止：角度微微下沉再回正）
+    const pitchRecoilTarget = THREE.MathUtils.degToRad(velocity.y * chopperPitchRecoilDebug.gain);
+    const pitchRecoilAccel = (pitchRecoilTarget - pitchRecoilOffset) * chopperPitchRecoilDebug.stiffness - pitchRecoilVel * chopperPitchRecoilDebug.damping;
+    pitchRecoilVel += pitchRecoilAccel * delta;
+    pitchRecoilOffset += pitchRecoilVel * delta;
+    pitchRecoilQuat.setFromAxisAngle(RIGHT_AXIS, pitchRecoilOffset);
+    chopper.quaternion.copy(chopperBaseQuat).multiply(pitchRecoilQuat);
 
     // 相機固定不跟隨直升機（AR 模式下相機由 8thWall 追蹤接管）
     if (!window._xrActive) {
@@ -1553,6 +1624,8 @@ const _startXR = () => {
       chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
       recoilOffsetY = 0;
       recoilVelY = 0;
+      pitchRecoilOffset = 0;
+      pitchRecoilVel = 0;
       arPlaced = true;
       window.arPlaced = true;
       reticle.visible = false;
