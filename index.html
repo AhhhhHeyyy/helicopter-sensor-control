@@ -481,9 +481,9 @@
       <div class="cam-row">
         <label for="chopper-vleash-gain">回彈衝量(垂直)</label>
         <input type="number" class="cam-max" id="chopper-vleash-gain-min" value="0" step="0.1">
-        <input type="range" id="chopper-vleash-gain" min="0" max="8" step="0.1" value="1.4">
+        <input type="range" id="chopper-vleash-gain" min="0" max="100" step="0.1" value="1.4">
         <span id="chopper-vleash-gain-val">1.4</span>
-        <input type="number" class="cam-max" id="chopper-vleash-gain-max" value="8" step="1">
+        <input type="number" class="cam-max" id="chopper-vleash-gain-max" value="100" step="10">
       </div>
       <div class="cam-row">
         <label for="chopper-pitch-recoil-k">角度回彈強度</label>
@@ -1493,9 +1493,13 @@ function animate() {
     // （上升速度變小/停止：踢出負向衝量，頭部先下沉再彈回；下降變小/停止則相反）
     // 直接加進 headingPitch 一起組成 headingEuler，確保回彈套用的是同一個乾淨的俯仰軸，
     // 而不是模型未校正前的原始網格軸（那樣疊加出來的旋轉方向會怪怪的、不像單純俯仰）
+    // 只在「沒有垂直輸入」（targetVel.y 為 0，即放開搖桿／傾斜回中）時才踢衝量，
+    // 避免搖桿還按著、速度朝目標加速逼近的過程中也被當成一次「速度變化」而誤觸回彈
     const deltaVelY = velocity.y - prevVelY;
     prevVelY = velocity.y;
-    pitchRecoilVel += deltaVelY * chopperPitchRecoilDebug.gain;
+    if (targetVel.y === 0) {
+      pitchRecoilVel += deltaVelY * chopperPitchRecoilDebug.gain;
+    }
     const pitchRecoilAccel = -pitchRecoilOffset * chopperPitchRecoilDebug.stiffness - pitchRecoilVel * chopperPitchRecoilDebug.damping;
     pitchRecoilVel += pitchRecoilAccel * delta;
     pitchRecoilOffset += pitchRecoilVel * delta;
@@ -1550,9 +1554,13 @@ function animate() {
     // 才會踢一下彈簧，讓機身先多位移一點、再準確彈回原本該在的高度——飛行中速度穩定
     // （不論是否為 0）時不會有持續偏移，只有加速/減速瞬間才看得到這個反作用力效果
     // （上升變慢/停止：先多沉一點再彈回；下降變慢/停止：先多衝高一點再彈回）
+    // 只在「沒有垂直輸入」（targetVel.y 為 0，即放開搖桿／傾斜回中）時才踢衝量，
+    // 避免搖桿還按著、速度朝目標加速逼近的過程中也被當成一次「速度變化」而誤觸回彈
     const deltaVelYPos = velocity.y - prevVelYPos;
     prevVelYPos = velocity.y;
-    recoilVelY += deltaVelYPos * chopperVertLeashDebug.gain;
+    if (targetVel.y === 0) {
+      recoilVelY += deltaVelYPos * chopperVertLeashDebug.gain;
+    }
     const recoilAccelY = -recoilOffsetY * chopperVertLeashDebug.stiffness - recoilVelY * chopperVertLeashDebug.damping;
     recoilVelY += recoilAccelY * delta;
     recoilOffsetY += recoilVelY * delta;
