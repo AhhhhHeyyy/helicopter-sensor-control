@@ -451,18 +451,32 @@
         <input type="number" class="cam-max" id="chopper-arrow-offset-max" value="2" step="1">
       </div>
       <div class="cam-row">
-        <label for="chopper-leash-k">拉力強度</label>
+        <label for="chopper-leash-k">拉力強度(水平)</label>
         <input type="number" class="cam-max" id="chopper-leash-k-min" value="0" step="1">
         <input type="range" id="chopper-leash-k" min="0" max="100" step="1" value="40">
         <span id="chopper-leash-k-val">40</span>
         <input type="number" class="cam-max" id="chopper-leash-k-max" value="100" step="10">
       </div>
       <div class="cam-row">
-        <label for="chopper-leash-damp">拉力阻尼</label>
+        <label for="chopper-leash-damp">拉力阻尼(水平)</label>
         <input type="number" class="cam-max" id="chopper-leash-damp-min" value="0" step="1">
         <input type="range" id="chopper-leash-damp" min="0" max="30" step="0.5" value="9">
         <span id="chopper-leash-damp-val">9</span>
         <input type="number" class="cam-max" id="chopper-leash-damp-max" value="30" step="5">
+      </div>
+      <div class="cam-row">
+        <label for="chopper-vleash-k">回彈強度(垂直)</label>
+        <input type="number" class="cam-max" id="chopper-vleash-k-min" value="0" step="1">
+        <input type="range" id="chopper-vleash-k" min="0" max="150" step="1" value="55">
+        <span id="chopper-vleash-k-val">55</span>
+        <input type="number" class="cam-max" id="chopper-vleash-k-max" value="150" step="10">
+      </div>
+      <div class="cam-row">
+        <label for="chopper-vleash-damp">回彈阻尼(垂直)</label>
+        <input type="number" class="cam-max" id="chopper-vleash-damp-min" value="0" step="1">
+        <input type="range" id="chopper-vleash-damp" min="0" max="30" step="0.5" value="4.5">
+        <span id="chopper-vleash-damp-val">4.5</span>
+        <input type="number" class="cam-max" id="chopper-vleash-damp-max" value="30" step="5">
       </div>
       <div class="cam-row">
         <label for="chopper-pivot-x">旋轉中心X</label>
@@ -723,6 +737,36 @@ window.chopperLeashDebug = { stiffness: 40, damping: 9 };
 
   input.addEventListener('input', () => {
     window.chopperLeashDebug[prop] = parseFloat(input.value);
+    val.textContent = input.value;
+  });
+
+  minIn.addEventListener('change', () => {
+    const mn = parseFloat(minIn.value);
+    if (!isFinite(mn)) return;
+    input.min = mn;
+  });
+
+  maxIn.addEventListener('change', () => {
+    const m = parseFloat(maxIn.value);
+    if (!isFinite(m)) return;
+    input.max = m;
+  });
+});
+
+// ── 機身上升／下沉時的垂直回彈參數（即時調整，獨立於水平拉力）─────
+// 阻尼刻意調得比水平方向低（欠阻尼），讓垂直移動時有明顯的往回彈反作用力感
+window.chopperVertLeashDebug = { stiffness: 55, damping: 4.5 };
+[
+  ['chopper-vleash-k', 'stiffness'],
+  ['chopper-vleash-damp', 'damping'],
+].forEach(([id, prop]) => {
+  const input = document.getElementById(id);
+  const val   = document.getElementById(id + '-val');
+  const minIn = document.getElementById(id + '-min');
+  const maxIn = document.getElementById(id + '-max');
+
+  input.addEventListener('input', () => {
+    window.chopperVertLeashDebug[prop] = parseFloat(input.value);
     val.textContent = input.value;
   });
 
@@ -1123,8 +1167,10 @@ const chopperPosDebug = window.chopperPosDebug;
 const chopperPivotDebug = window.chopperPivotDebug;
 // 箭頭（拉力錨點）沿飛行方向前移的距離（即時調整）
 const chopperArrowOffsetDebug = window.chopperArrowOffsetDebug;
-// 機身被箭頭拉著走的彈簧-阻尼參數（即時調整）
+// 機身被箭頭拉著走的彈簧-阻尼參數（即時調整，水平 x/z）
 const chopperLeashDebug = window.chopperLeashDebug;
+// 機身上升／下沉時的垂直回彈參數（即時調整，僅套用在 y 軸）
+const chopperVertLeashDebug = window.chopperVertLeashDebug;
 const movePos = new THREE.Vector3(0, 0, 0); // 飛行範圍內的相對位置（不含初始位置偏移）
 
 const MAX_SPEED  = 1.6;  // 最大移動速度（單位／秒）
@@ -1408,8 +1454,13 @@ function animate() {
       chopperVisualVel.set(0, 0, 0);
       chopperVisualInit = true;
     }
-    leashAccel.copy(arrowPos).sub(chopperVisualPos).multiplyScalar(chopperLeashDebug.stiffness)
-      .addScaledVector(chopperVisualVel, -chopperLeashDebug.damping);
+    // 水平（x/z）與垂直（y）分開套用不同的彈簧-阻尼係數：
+    // 垂直方向阻尼刻意調低（欠阻尼），上升/下沉時會有明顯的往回彈反作用力感
+    leashAccel.set(
+      (arrowPos.x - chopperVisualPos.x) * chopperLeashDebug.stiffness - chopperVisualVel.x * chopperLeashDebug.damping,
+      (arrowPos.y - chopperVisualPos.y) * chopperVertLeashDebug.stiffness - chopperVisualVel.y * chopperVertLeashDebug.damping,
+      (arrowPos.z - chopperVisualPos.z) * chopperLeashDebug.stiffness - chopperVisualVel.z * chopperLeashDebug.damping
+    );
     chopperVisualVel.addScaledVector(leashAccel, delta);
     chopperVisualPos.addScaledVector(chopperVisualVel, delta);
     chopper.position.copy(chopperVisualPos);
