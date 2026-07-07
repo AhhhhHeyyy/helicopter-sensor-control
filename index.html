@@ -479,11 +479,11 @@
         <input type="number" class="cam-max" id="chopper-vleash-damp-max" value="30" step="5">
       </div>
       <div class="cam-row">
-        <label for="chopper-vleash-gain">回彈幅度(垂直)</label>
+        <label for="chopper-vleash-gain">回彈衝量(垂直)</label>
         <input type="number" class="cam-max" id="chopper-vleash-gain-min" value="0" step="0.1">
-        <input type="range" id="chopper-vleash-gain" min="0" max="2" step="0.05" value="0.5">
-        <span id="chopper-vleash-gain-val">0.5</span>
-        <input type="number" class="cam-max" id="chopper-vleash-gain-max" value="2" step="0.5">
+        <input type="range" id="chopper-vleash-gain" min="0" max="8" step="0.1" value="2.5">
+        <span id="chopper-vleash-gain-val">2.5</span>
+        <input type="number" class="cam-max" id="chopper-vleash-gain-max" value="8" step="1">
       </div>
       <div class="cam-row">
         <label for="chopper-pitch-recoil-k">角度回彈強度</label>
@@ -782,9 +782,9 @@ window.chopperLeashDebug = { stiffness: 40, damping: 9 };
 });
 
 // ── 機身上升／下沉時的垂直回彈參數（即時調整，獨立於水平拉力）─────
-// gain：目前垂直速度轉換成「回彈位移目標」的比例，飛行中速度不為 0 時會持續有一點位移，
-// 放開／停止時位移目標歸零，欠阻尼的彈簧就會把位移拉回 0，途中順勢往反方向彈一下
-window.chopperVertLeashDebug = { stiffness: 55, damping: 4.5, gain: 0.5 };
+// gain：垂直速度「變化量」（加減速）轉換成回彈衝量的比例，彈簧目標永遠是 0（真正該在的高度），
+// 只有速度改變的瞬間才踢一下彈簧，飛行中速度穩定時不會有持續偏移，停止後也會準確彈回原位
+window.chopperVertLeashDebug = { stiffness: 55, damping: 4.5, gain: 2.5 };
 [
   ['chopper-vleash-k', 'stiffness'],
   ['chopper-vleash-damp', 'damping'],
@@ -1276,6 +1276,7 @@ const leashAccel = new THREE.Vector3(); // 彈簧-阻尼系統暫存加速度
 let chopperVisualInit = false; // 是否已初始化機身視覺位置（避免第一幀從原點飛過來）
 let recoilOffsetY = 0; // 垂直回彈層的位移（疊加在 chopper.position.y 上，純視覺效果）
 let recoilVelY = 0;    // 垂直回彈層的速度
+let prevVelYPos = 0;   // 上一幀的垂直飛行速度，用來偵測「速度變化」以觸發垂直位移回彈衝量
 let pitchRecoilOffset = 0; // 角度回彈層的俯仰角（弧度），直接加進 headingPitch 一起套用，
                             // 避免另外用四元數疊加時落在模型未校正的原始網格軸上而看起來不像單純俯仰
 let pitchRecoilVel = 0;    // 角度回彈層的角速度
@@ -1545,12 +1546,14 @@ function animate() {
     chopperVisualPos.addScaledVector(chopperVisualVel, delta);
     chopper.position.copy(chopperVisualPos);
 
-    // 垂直回彈層：位移目標＝目前垂直飛行速度（velocity.y）* 增益，飛行中速度不為 0 時
-    // 機身會持續朝反方向多位移一點（下降時多沉一點、上升時多衝高一點）；
-    // 一旦速度轉為 0（放開搖桿或停止傾斜），目標歸零，欠阻尼彈簧把位移拉回 0，
-    // 過程中順著慣性往反方向彈一下，形成「下降後回彈上升／上升後回彈下沉」的反作用力錯覺
-    const recoilTargetY = velocity.y * chopperVertLeashDebug.gain;
-    const recoilAccelY = (recoilTargetY - recoilOffsetY) * chopperVertLeashDebug.stiffness - recoilVelY * chopperVertLeashDebug.damping;
+    // 垂直回彈層：彈簧目標永遠是 0（機身真正該在的位置），只有「垂直速度變化」的瞬間
+    // 才會踢一下彈簧，讓機身先多位移一點、再準確彈回原本該在的高度——飛行中速度穩定
+    // （不論是否為 0）時不會有持續偏移，只有加速/減速瞬間才看得到這個反作用力效果
+    // （上升變慢/停止：先多沉一點再彈回；下降變慢/停止：先多衝高一點再彈回）
+    const deltaVelYPos = velocity.y - prevVelYPos;
+    prevVelYPos = velocity.y;
+    recoilVelY += deltaVelYPos * chopperVertLeashDebug.gain;
+    const recoilAccelY = -recoilOffsetY * chopperVertLeashDebug.stiffness - recoilVelY * chopperVertLeashDebug.damping;
     recoilVelY += recoilAccelY * delta;
     recoilOffsetY += recoilVelY * delta;
     chopper.position.y += recoilOffsetY;
@@ -1627,6 +1630,7 @@ const _startXR = () => {
       chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
       recoilOffsetY = 0;
       recoilVelY = 0;
+      prevVelYPos = 0;
       pitchRecoilOffset = 0;
       pitchRecoilVel = 0;
       arPlaced = true;
