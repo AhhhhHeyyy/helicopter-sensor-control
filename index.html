@@ -467,15 +467,15 @@
       <div class="cam-row">
         <label for="chopper-vleash-k">回彈強度(垂直)</label>
         <input type="number" class="cam-max" id="chopper-vleash-k-min" value="0" step="1">
-        <input type="range" id="chopper-vleash-k" min="0" max="150" step="1" value="73">
-        <span id="chopper-vleash-k-val">73</span>
+        <input type="range" id="chopper-vleash-k" min="0" max="150" step="1" value="23">
+        <span id="chopper-vleash-k-val">23</span>
         <input type="number" class="cam-max" id="chopper-vleash-k-max" value="150" step="10">
       </div>
       <div class="cam-row">
         <label for="chopper-vleash-damp">回彈阻尼(垂直)</label>
         <input type="number" class="cam-max" id="chopper-vleash-damp-min" value="0" step="1">
-        <input type="range" id="chopper-vleash-damp" min="0" max="30" step="0.5" value="15.5">
-        <span id="chopper-vleash-damp-val">15.5</span>
+        <input type="range" id="chopper-vleash-damp" min="0" max="30" step="0.5" value="19">
+        <span id="chopper-vleash-damp-val">19</span>
         <input type="number" class="cam-max" id="chopper-vleash-damp-max" value="30" step="5">
       </div>
       <div class="cam-row">
@@ -793,7 +793,7 @@ window.chopperLeashDebug = { stiffness: 40, damping: 9 };
 // 只有速度改變的瞬間才踢一下彈簧，飛行中速度穩定時不會有持續偏移，停止後也會準確彈回原位
 // dampGain：額外阻尼隨「目前回彈速度」線性增加的係數，傾斜角度越大、踢出的衝量越大，
 // 回彈當下的速度就越快，這股額外阻尼會跟著變重，避免傾斜幅度大時晃得又猛又久
-window.chopperVertLeashDebug = { stiffness: 73, damping: 15.5, gain: 31.6, dampGain: 0.3 };
+window.chopperVertLeashDebug = { stiffness: 23, damping: 19, gain: 31.6, dampGain: 0.3 };
 [
   ['chopper-vleash-k', 'stiffness'],
   ['chopper-vleash-damp', 'damping'],
