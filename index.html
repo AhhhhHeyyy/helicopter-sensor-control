@@ -500,11 +500,11 @@
         <input type="number" class="cam-max" id="chopper-pitch-recoil-damp-max" value="30" step="5">
       </div>
       <div class="cam-row">
-        <label for="chopper-pitch-recoil-gain">角度回彈幅度(度)</label>
-        <input type="number" class="cam-max" id="chopper-pitch-recoil-gain-min" value="0" step="1">
-        <input type="range" id="chopper-pitch-recoil-gain" min="0" max="30" step="0.5" value="15">
-        <span id="chopper-pitch-recoil-gain-val">15</span>
-        <input type="number" class="cam-max" id="chopper-pitch-recoil-gain-max" value="30" step="5">
+        <label for="chopper-pitch-recoil-gain">角度回彈衝量</label>
+        <input type="number" class="cam-max" id="chopper-pitch-recoil-gain-min" value="0" step="0.1">
+        <input type="range" id="chopper-pitch-recoil-gain" min="0" max="5" step="0.1" value="1.2">
+        <span id="chopper-pitch-recoil-gain-val">1.2</span>
+        <input type="number" class="cam-max" id="chopper-pitch-recoil-gain-max" value="5" step="1">
       </div>
       <div class="cam-row">
         <label for="chopper-pivot-x">旋轉中心X</label>
@@ -814,10 +814,10 @@ window.chopperVertLeashDebug = { stiffness: 55, damping: 4.5, gain: 0.5 };
 });
 
 // ── 機身上升／下沉時的角度回彈參數（即時調整，模擬電梯／公車煞車的慣性傾斜感）─────
-// gain：目前垂直速度轉換成「回彈角度目標」的比例（度），飛行中速度不為 0 時機身會持續多傾一點角度，
-// 停止時角度目標歸零，欠阻尼彈簧把角度拉回 0，途中會順勢往反方向多轉一點再回正
-// （上升停止：頭部微微下沉再回正；下降停止：頭部微微上揚再回正）
-window.chopperPitchRecoilDebug = { stiffness: 30, damping: 3, gain: 15 };
+// gain：垂直速度「變化量」（加減速）轉換成回彈衝量的比例，只有速度改變（尤其是停止）的
+// 瞬間才會踢一下角度彈簧，彈簧目標永遠是 0（原本角度），所以效果是疊加在目前姿態之外
+// 「先多轉一點，再彈回原本角度」，而不是跟著陀螺儀角度持續同步、不易察覺的穩態偏移
+window.chopperPitchRecoilDebug = { stiffness: 25, damping: 3, gain: 1.2 };
 [
   ['chopper-pitch-recoil-k', 'stiffness'],
   ['chopper-pitch-recoil-damp', 'damping'],
@@ -1276,10 +1276,10 @@ const leashAccel = new THREE.Vector3(); // 彈簧-阻尼系統暫存加速度
 let chopperVisualInit = false; // 是否已初始化機身視覺位置（避免第一幀從原點飛過來）
 let recoilOffsetY = 0; // 垂直回彈層的位移（疊加在 chopper.position.y 上，純視覺效果）
 let recoilVelY = 0;    // 垂直回彈層的速度
-let pitchRecoilOffset = 0; // 角度回彈層的俯仰角（弧度，疊加在機身朝向上，純視覺效果）
+let pitchRecoilOffset = 0; // 角度回彈層的俯仰角（弧度），直接加進 headingPitch 一起套用，
+                            // 避免另外用四元數疊加時落在模型未校正的原始網格軸上而看起來不像單純俯仰
 let pitchRecoilVel = 0;    // 角度回彈層的角速度
-const chopperBaseQuat = new THREE.Quaternion(); // 機身「基準朝向」：只追朝向指示棒，不含角度回彈層
-const pitchRecoilQuat = new THREE.Quaternion(); // 角度回彈層暫存四元數（每幀依 pitchRecoilOffset 重新計算，不累加）
+let prevVelY = 0;          // 上一幀的垂直飛行速度，用來偵測「速度變化」以觸發回彈衝量
 const headingQuat = new THREE.Quaternion(); // 機身顯示朝向：對齊朝向指示棒方向
 const headingEuler = new THREE.Euler();
 const UP_AXIS = new THREE.Vector3(0, 1, 0);
@@ -1485,11 +1485,23 @@ function animate() {
     const headingYaw = Math.atan2(-smoothedHeadingDir.x, -smoothedHeadingDir.z);
     const headingHorizLen = Math.hypot(smoothedHeadingDir.x, smoothedHeadingDir.z);
     const headingPitch = Math.atan2(smoothedHeadingDir.y, headingHorizLen);
-    headingEuler.set(headingPitch, headingYaw, 0, 'YXZ');
+
+    // 角度回彈層：彈簧目標永遠是 0（原本角度），只有「垂直速度變化」的瞬間才會踢一下彈簧，
+    // 讓機身先多轉一點角度、再彈回原本朝向——跟朝著陀螺儀角度持續同步的穩態偏移不同，
+    // 這裡疊加的是一次性衝量，效果不會被目前的傾斜角度蓋過去
+    // （上升速度變小/停止：踢出負向衝量，頭部先下沉再彈回；下降變小/停止則相反）
+    // 直接加進 headingPitch 一起組成 headingEuler，確保回彈套用的是同一個乾淨的俯仰軸，
+    // 而不是模型未校正前的原始網格軸（那樣疊加出來的旋轉方向會怪怪的、不像單純俯仰）
+    const deltaVelY = velocity.y - prevVelY;
+    prevVelY = velocity.y;
+    pitchRecoilVel += deltaVelY * chopperPitchRecoilDebug.gain;
+    const pitchRecoilAccel = -pitchRecoilOffset * chopperPitchRecoilDebug.stiffness - pitchRecoilVel * chopperPitchRecoilDebug.damping;
+    pitchRecoilVel += pitchRecoilAccel * delta;
+    pitchRecoilOffset += pitchRecoilVel * delta;
+
+    headingEuler.set(headingPitch + pitchRecoilOffset, headingYaw, 0, 'YXZ');
     headingQuat.setFromEuler(headingEuler).multiply(offsetQuat);
-    // 只更新「基準朝向」，角度回彈層在下面套用時才會疊加到 chopper.quaternion，
-    // 避免回彈的角度被永久疊進基準朝向裡（否則會隨時間累積誤差）
-    chopperBaseQuat.slerp(headingQuat, Math.min(1, TURN_DAMPING * delta));
+    chopper.quaternion.slerp(headingQuat, Math.min(1, TURN_DAMPING * delta));
 
     velocity.x = approachValue(velocity.x, targetVel.x, delta);
     velocity.y = approachValue(velocity.y, targetVel.y, delta);
@@ -1542,17 +1554,6 @@ function animate() {
     recoilVelY += recoilAccelY * delta;
     recoilOffsetY += recoilVelY * delta;
     chopper.position.y += recoilOffsetY;
-
-    // 角度回彈層：跟垂直位移回彈同一套邏輯，但作用在俯仰角上——
-    // 上升/下降時機身多傾一點角度，停止時角度目標歸零、欠阻尼彈簧拉回 0，
-    // 途中會往反方向多轉一點再回正，模擬電梯／公車煞車時的慣性傾斜感
-    // （上升停止：角度微微下沉再回正；下降停止：角度微微上揚再回正）
-    const pitchRecoilTarget = THREE.MathUtils.degToRad(velocity.y * chopperPitchRecoilDebug.gain);
-    const pitchRecoilAccel = (pitchRecoilTarget - pitchRecoilOffset) * chopperPitchRecoilDebug.stiffness - pitchRecoilVel * chopperPitchRecoilDebug.damping;
-    pitchRecoilVel += pitchRecoilAccel * delta;
-    pitchRecoilOffset += pitchRecoilVel * delta;
-    pitchRecoilQuat.setFromAxisAngle(RIGHT_AXIS, pitchRecoilOffset);
-    chopper.quaternion.copy(chopperBaseQuat).multiply(pitchRecoilQuat);
 
     // 相機固定不跟隨直升機（AR 模式下相機由 8thWall 追蹤接管）
     if (!window._xrActive) {
