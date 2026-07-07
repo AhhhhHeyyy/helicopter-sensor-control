@@ -444,11 +444,25 @@
         <input type="number" class="cam-max" id="chopper-rot-z-max" value="180" step="1">
       </div>
       <div class="cam-row">
-        <label for="chopper-arrow-offset">機身疊箭頭</label>
+        <label for="chopper-arrow-offset">箭頭前移量</label>
         <input type="number" class="cam-max" id="chopper-arrow-offset-min" value="0" step="0.5">
         <input type="range" id="chopper-arrow-offset" min="0" max="2" step="0.05" value="1">
         <span id="chopper-arrow-offset-val">1</span>
         <input type="number" class="cam-max" id="chopper-arrow-offset-max" value="2" step="1">
+      </div>
+      <div class="cam-row">
+        <label for="chopper-leash-k">拉力強度</label>
+        <input type="number" class="cam-max" id="chopper-leash-k-min" value="0" step="1">
+        <input type="range" id="chopper-leash-k" min="0" max="100" step="1" value="40">
+        <span id="chopper-leash-k-val">40</span>
+        <input type="number" class="cam-max" id="chopper-leash-k-max" value="100" step="10">
+      </div>
+      <div class="cam-row">
+        <label for="chopper-leash-damp">拉力阻尼</label>
+        <input type="number" class="cam-max" id="chopper-leash-damp-min" value="0" step="1">
+        <input type="range" id="chopper-leash-damp" min="0" max="30" step="0.5" value="9">
+        <span id="chopper-leash-damp-val">9</span>
+        <input type="number" class="cam-max" id="chopper-leash-damp-max" value="30" step="5">
       </div>
       <div class="cam-row">
         <label for="chopper-pivot-x">旋轉中心X</label>
@@ -669,7 +683,7 @@ window.chopperPivotDebug = { x: -2.9, y: 0, z: 0 };
   });
 });
 
-// ── 機身疊在朝向指示棒上的偏移量（即時調整，0=機身在邏輯位置，1=疊在箭頭尖端）──
+// ── 箭頭（拉力錨點）沿飛行方向前移的距離（即時調整，0=箭頭在機身邏輯中心，越大箭頭離機身越遠）──
 window.chopperArrowOffsetDebug = { value: 1 };
 {
   const input = document.getElementById('chopper-arrow-offset');
@@ -694,6 +708,36 @@ window.chopperArrowOffsetDebug = { value: 1 };
     input.max = m;
   });
 }
+
+// ── 機身被箭頭拉著走的彈簧-阻尼參數（即時調整）─────────────
+// stiffness：拉力強度，越大機身追箭頭追得越緊／越快；damping：阻尼，越大甩動停得越快、越不會晃
+window.chopperLeashDebug = { stiffness: 40, damping: 9 };
+[
+  ['chopper-leash-k', 'stiffness'],
+  ['chopper-leash-damp', 'damping'],
+].forEach(([id, prop]) => {
+  const input = document.getElementById(id);
+  const val   = document.getElementById(id + '-val');
+  const minIn = document.getElementById(id + '-min');
+  const maxIn = document.getElementById(id + '-max');
+
+  input.addEventListener('input', () => {
+    window.chopperLeashDebug[prop] = parseFloat(input.value);
+    val.textContent = input.value;
+  });
+
+  minIn.addEventListener('change', () => {
+    const mn = parseFloat(minIn.value);
+    if (!isFinite(mn)) return;
+    input.min = mn;
+  });
+
+  maxIn.addEventListener('change', () => {
+    const m = parseFloat(maxIn.value);
+    if (!isFinite(m)) return;
+    input.max = m;
+  });
+});
 
 // ── 機身旋轉偏移量（度，即時調整，預設 Y=-90 對應原本的 BASE_YAW）───
 window.chopperRotDebug = { x: -168, y: -90, z: -168 };
@@ -1077,8 +1121,10 @@ const moveRangeDebug = window.moveRangeDebug;
 const chopperPosDebug = window.chopperPosDebug;
 // 機身旋轉中心偏移（即時調整，相對模型幾何中心位移旋轉軸心）
 const chopperPivotDebug = window.chopperPivotDebug;
-// 機身疊在朝向指示棒上的偏移量（即時調整）
+// 箭頭（拉力錨點）沿飛行方向前移的距離（即時調整）
 const chopperArrowOffsetDebug = window.chopperArrowOffsetDebug;
+// 機身被箭頭拉著走的彈簧-阻尼參數（即時調整）
+const chopperLeashDebug = window.chopperLeashDebug;
 const movePos = new THREE.Vector3(0, 0, 0); // 飛行範圍內的相對位置（不含初始位置偏移）
 
 const MAX_SPEED  = 1.6;  // 最大移動速度（單位／秒）
@@ -1111,6 +1157,12 @@ const flightRightXZ   = new THREE.Vector3(); // flightRight 在水平面的投�
 const targetVel      = new THREE.Vector3();
 const headingArrowDir = new THREE.Vector3();
 const smoothedHeadingDir = new THREE.Vector3(0, 0, -1); // 朝向指示棒方向的平滑值，避免搖桿瞬間轉向造成機身瞬間旋轉/位移
+const corePos  = new THREE.Vector3(); // 拉力錨點的邏輯中心（移動範圍中心 + AR 地板錨點）
+const arrowPos = new THREE.Vector3(); // 箭頭實際位置＝corePos 沿飛行方向前移後的位置
+const chopperVisualPos = new THREE.Vector3(); // 機身「被拉著走」的實際顯示位置（落後於箭頭）
+const chopperVisualVel = new THREE.Vector3(); // 機身視覺位置的慣性速度
+const leashAccel = new THREE.Vector3(); // 彈簧-阻尼系統暫存加速度
+let chopperVisualInit = false; // 是否已初始化機身視覺位置（避免第一幀從原點飛過來）
 const headingQuat = new THREE.Quaternion(); // 機身顯示朝向：對齊朝向指示棒方向
 const headingEuler = new THREE.Euler();
 const UP_AXIS = new THREE.Vector3(0, 1, 0);
@@ -1337,16 +1389,30 @@ function animate() {
     if (nextY !== movePos.y) velocity.y = 0;
     if (nextZ !== movePos.z) velocity.z = 0;
 
-    // 套用「飛機初始位置」偏移（移動範圍以此為中心）+ AR 地板錨點
-    chopper.position.x = arAnchorPos.x + movePos.x + chopperPosDebug.x;
-    chopper.position.y = arAnchorPos.y + movePos.y + chopperPosDebug.y;
-    chopper.position.z = arAnchorPos.z + movePos.z + chopperPosDebug.z;
+    // 拉力錨點的邏輯中心：「飛機初始位置」偏移（移動範圍以此為中心）+ AR 地板錨點
+    corePos.set(
+      arAnchorPos.x + movePos.x + chopperPosDebug.x,
+      arAnchorPos.y + movePos.y + chopperPosDebug.y,
+      arAnchorPos.z + movePos.z + chopperPosDebug.z
+    );
 
-    // 朝向指示棒位置維持在機身邏輯位置（箭頭本身不變動）
-    headingArrow.position.copy(chopper.position);
+    // 箭頭沿飛行方向前移（由偵錯面板「箭頭前移量」滑桿即時調整），直接跟著搖桿輸入走，
+    // 不受機身慣性影響——箭頭本身就是被「拉著」的那一頭
+    arrowPos.copy(corePos).addScaledVector(smoothedHeadingDir, chopperArrowOffsetDebug.value);
+    headingArrow.position.copy(arrowPos);
 
-    // 機身疊在箭頭上的偏移量，由偵錯面板「機身疊箭頭」滑桿即時調整（用平滑後方向避免瞬間位移）
-    chopper.position.addScaledVector(smoothedHeadingDir, chopperArrowOffsetDebug.value);
+    // 機身像被繩子綁在箭頭上一樣，用彈簧-阻尼系統追向箭頭位置：
+    // 箭頭先動，機身靠慣性被拉著走，會有滯後與甩尾感（強度/阻尼由偵錯面板「拉力強度／拉力阻尼」調整）
+    if (!chopperVisualInit) {
+      chopperVisualPos.copy(arrowPos);
+      chopperVisualVel.set(0, 0, 0);
+      chopperVisualInit = true;
+    }
+    leashAccel.copy(arrowPos).sub(chopperVisualPos).multiplyScalar(chopperLeashDebug.stiffness)
+      .addScaledVector(chopperVisualVel, -chopperLeashDebug.damping);
+    chopperVisualVel.addScaledVector(leashAccel, delta);
+    chopperVisualPos.addScaledVector(chopperVisualVel, delta);
+    chopper.position.copy(chopperVisualPos);
 
     // 相機固定不跟隨直升機（AR 模式下相機由 8thWall 追蹤接管）
     if (!window._xrActive) {
@@ -1417,6 +1483,7 @@ const _startXR = () => {
       arAnchorPos.copy(reticle.position);
       // chopperPosDebug.y 會疊加在 arAnchorPos 上，需先扣掉才能讓飛機剛好在地板上方 0.3m
       arAnchorPos.y += 0.001 - chopperPosDebug.y;
+      chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
       arPlaced = true;
       window.arPlaced = true;
       reticle.visible = false;
