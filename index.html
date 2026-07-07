@@ -479,6 +479,13 @@
         <input type="number" class="cam-max" id="chopper-vleash-damp-max" value="30" step="5">
       </div>
       <div class="cam-row">
+        <label for="chopper-vleash-dampgain">回彈阻尼加成(垂直)</label>
+        <input type="number" class="cam-max" id="chopper-vleash-dampgain-min" value="0" step="0.1">
+        <input type="range" id="chopper-vleash-dampgain" min="0" max="2" step="0.05" value="0.3">
+        <span id="chopper-vleash-dampgain-val">0.3</span>
+        <input type="number" class="cam-max" id="chopper-vleash-dampgain-max" value="2" step="0.5">
+      </div>
+      <div class="cam-row">
         <label for="chopper-vleash-gain">回彈衝量(垂直)</label>
         <input type="number" class="cam-max" id="chopper-vleash-gain-min" value="0" step="0.1">
         <input type="range" id="chopper-vleash-gain" min="0" max="100" step="0.1" value="31.6">
@@ -784,10 +791,13 @@ window.chopperLeashDebug = { stiffness: 40, damping: 9 };
 // ── 機身上升／下沉時的垂直回彈參數（即時調整，獨立於水平拉力）─────
 // gain：垂直速度「變化量」（加減速）轉換成回彈衝量的比例，彈簧目標永遠是 0（真正該在的高度），
 // 只有速度改變的瞬間才踢一下彈簧，飛行中速度穩定時不會有持續偏移，停止後也會準確彈回原位
-window.chopperVertLeashDebug = { stiffness: 73, damping: 15.5, gain: 31.6 };
+// dampGain：額外阻尼隨「目前回彈速度」線性增加的係數，傾斜角度越大、踢出的衝量越大，
+// 回彈當下的速度就越快，這股額外阻尼會跟著變重，避免傾斜幅度大時晃得又猛又久
+window.chopperVertLeashDebug = { stiffness: 73, damping: 15.5, gain: 31.6, dampGain: 0.3 };
 [
   ['chopper-vleash-k', 'stiffness'],
   ['chopper-vleash-damp', 'damping'],
+  ['chopper-vleash-dampgain', 'dampGain'],
   ['chopper-vleash-gain', 'gain'],
 ].forEach(([id, prop]) => {
   const input = document.getElementById(id);
@@ -1561,7 +1571,8 @@ function animate() {
     if (targetVel.y === 0) {
       recoilVelY += deltaVelYPos * chopperVertLeashDebug.gain;
     }
-    const recoilAccelY = -recoilOffsetY * chopperVertLeashDebug.stiffness - recoilVelY * chopperVertLeashDebug.damping;
+    const recoilDampingY = chopperVertLeashDebug.damping + Math.abs(recoilVelY) * chopperVertLeashDebug.dampGain;
+    const recoilAccelY = -recoilOffsetY * chopperVertLeashDebug.stiffness - recoilVelY * recoilDampingY;
     recoilVelY += recoilAccelY * delta;
     recoilOffsetY += recoilVelY * delta;
     chopper.position.y += recoilOffsetY;
