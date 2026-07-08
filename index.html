@@ -1221,12 +1221,29 @@ let arAnchorPos = new THREE.Vector3(0, 0, 0);
 let arPlaced = false;
 window.arPlaced = false; // 同步給姿態引導遮罩讀取（不同 script 作用域）
 
+const reticleMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, side: THREE.DoubleSide });
 const reticle = new THREE.Mesh(
   new THREE.RingGeometry(0.08, 0.12, 32).rotateX(-Math.PI / 2),
-  new THREE.MeshBasicMaterial({ color: 0x00ff88, side: THREE.DoubleSide })
+  reticleMat
 );
 reticle.visible = false;
 scene.add(reticle);
+
+// 地板偵測穩定度判斷：hit-test 結果距離越遠雜訊越大，單幀結果可能忽高忽低，
+// 需連續多幀的偵測結果都落在容許誤差內（且用平滑後的位置）才允許放置，避免飛機懸空或陷地
+const RETICLE_STABLE_FRAMES = 12; // 需連續穩定的幀數
+const RETICLE_STABLE_TOL    = 0.02; // 容許誤差（公尺）
+const RETICLE_SMOOTH_ALPHA  = 0.25; // 平滑係數（越小越平滑但反應越慢）
+const reticleHistory = [];
+const reticleSmoothed = new THREE.Vector3();
+let reticleStable = false;
+let reticleHasSample = false;
+
+function resetReticleStability() {
+  reticleHistory.length = 0;
+  reticleStable = false;
+  reticleHasSample = false;
+}
 
 // 搖桿可移動的範圍（世界座標單位）
 // 即時數值由「偵錯面板」的移動範圍滑桿控制（window.moveRangeDebug）
@@ -1276,7 +1293,7 @@ const flightRight   = new THREE.Vector3();
 const flightForwardXZ = new THREE.Vector3(); // flightForward 在水平面的投影（搖桿前後方向）
 const flightRightXZ   = new THREE.Vector3(); // flightRight 在水平面的投影（搖桿左右方向）
 const targetVel      = new THREE.Vector3();
-const headingArrowDir = new THREE.Vector3();
+const headingArrowDir = new THREE.Vector3(0, 0, -1);
 const smoothedHeadingDir = new THREE.Vector3(0, 0, -1); // 朝向指示棒方向的平滑值，避免搖桿瞬間轉向造成機身瞬間旋轉/位移
 const corePos  = new THREE.Vector3(); // 拉力錨點的邏輯中心（移動範圍中心 + AR 地板錨點）
 const arrowPos = new THREE.Vector3(); // 箭頭實際位置＝corePos 沿飛行方向前移後的位置
@@ -1473,11 +1490,10 @@ function animate() {
       .multiplyScalar(MAX_SPEED);
     targetVel.y = vertInput * MAX_SPEED;
 
-    // 更新朝向指示棒方向：有實際飛行速度（搖桿輸入，含其疊加的傾斜垂直分量）時指向該方向，否則顯示機身前方
+    // 更新朝向指示棒方向：只在有實際飛行速度（搖桿輸入，含其疊加的傾斜垂直分量）時才更新，
+    // 沒有輸入時維持上一次的朝向不變——機頭不再跟著手機朝向（陀螺儀）轉動，只跟著移動方向轉
     if (targetVel.lengthSq() > 1e-6) {
       headingArrowDir.copy(targetVel).normalize();
-    } else {
-      headingArrowDir.copy(flightForward);
     }
     headingArrow.setDirection(headingArrowDir);
 
@@ -1626,10 +1642,34 @@ const _startXR = () => {
       if (!arPlaced) {
         const _ch = XR8.XrController.hitTest(0.5, 0.5, { DETECTED_SURFACE: true });
         if (_ch && _ch.length > 0) {
-          reticle.position.set(_ch[0].position.x, _ch[0].position.y, _ch[0].position.z);
+          const hp = _ch[0].position;
+          if (!reticleHasSample) {
+            reticleSmoothed.set(hp.x, hp.y, hp.z); // 第一筆樣本直接對齊，避免從原點平滑過來
+            reticleHasSample = true;
+          } else {
+            reticleSmoothed.lerp(new THREE.Vector3(hp.x, hp.y, hp.z), RETICLE_SMOOTH_ALPHA);
+          }
+          reticle.position.copy(reticleSmoothed);
           reticle.visible = true;
+
+          // 遠距離時單眼 SLAM 的深度估計雜訊較大，需連續 N 幀的原始偵測結果都
+          // 落在容許誤差內才視為穩定，避免瞬間雜訊造成放置高度偏差（懸空／陷地）
+          reticleHistory.push(new THREE.Vector3(hp.x, hp.y, hp.z));
+          if (reticleHistory.length > RETICLE_STABLE_FRAMES) reticleHistory.shift();
+          if (reticleHistory.length === RETICLE_STABLE_FRAMES) {
+            const avg = new THREE.Vector3();
+            reticleHistory.forEach(v => avg.add(v));
+            avg.multiplyScalar(1 / reticleHistory.length);
+            let maxDev = 0;
+            reticleHistory.forEach(v => { maxDev = Math.max(maxDev, v.distanceTo(avg)); });
+            reticleStable = maxDev < RETICLE_STABLE_TOL;
+          } else {
+            reticleStable = false;
+          }
+          reticleMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
         } else {
           reticle.visible = false;
+          resetReticleStability();
         }
       }
     },
@@ -1639,11 +1679,11 @@ const _startXR = () => {
   };
 
   // 點按螢幕 → 放置直升機到 reticle 位置（reticle 由 onUpdate 即時更新）
-  // 需同時滿足：地板已偵測到（reticle 可見）＋ 手機角度已符合姿態引導的要求
+  // 需同時滿足：地板已偵測到（reticle 可見）＋ 偵測結果已連續多幀穩定＋手機角度已符合姿態引導的要求
   renderer.domElement.addEventListener('touchend', (e) => {
     // 避免觸碰搖桿區域時也觸發（搖桿在右下，reticle 需可見才放置）
-    if (reticle.visible && !arPlaced && window.orientGuideOk) {
-      arAnchorPos.copy(reticle.position);
+    if (reticle.visible && reticleStable && !arPlaced && window.orientGuideOk) {
+      arAnchorPos.copy(reticleSmoothed);
       // chopperPosDebug.y 會疊加在 arAnchorPos 上，需先扣掉才能讓飛機剛好在地板上方 0.3m
       arAnchorPos.y += 0.001 - chopperPosDebug.y;
       chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
@@ -1667,6 +1707,7 @@ const _startXR = () => {
     _holdTimer = setTimeout(() => {
       arPlaced = false;
       window.arPlaced = false;
+      resetReticleStability();
       const h = document.getElementById('ar-place-hint');
       if (h) h.style.display = '';
     }, 2000);
