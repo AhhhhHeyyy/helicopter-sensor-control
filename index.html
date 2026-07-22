@@ -570,7 +570,7 @@
       <div id="controls-row">
         <div id="grab-section">
           <button id="alt-btn" class="action-btn">上升</button>
-          <button id="grab-btn" class="action-btn">抓取</button>
+          <button id="grab-btn" class="action-btn hidden">抓取</button>
         </div>
         <div id="joy-wrapper"><div id="joy-base">
         <svg id="joy-svg" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg">
@@ -1543,9 +1543,11 @@ function animate() {
       .multiplyScalar(MAX_SPEED);
     targetVel.y = vertTarget;
 
-    // 更新朝向指示棒方向：只在有實際飛行速度（搖桿輸入，含其疊加的傾斜垂直分量）時才更新，
-    // 沒有輸入時維持上一次的朝向不變——機頭不再跟著手機朝向（陀螺儀）轉動，只跟著移動方向轉
-    if (targetVel.lengthSq() > 1e-6) {
+    // 更新朝向指示棒方向：只在搖桿有水平輸入時才更新（上升按鈕造成的垂直下沉/上升不列入計算，
+    // 避免尚未移動時就因為預設的緩慢下沉目標速度而讓機頭一直想朝下）；
+    // 沒有水平輸入時維持上一次的朝向不變（預設維持機頭朝前）——機頭不再跟著手機朝向（陀螺儀）轉動，只跟著移動方向轉
+    const joyActive = (state.joyH * state.joyH + state.joyV * state.joyV) > 1e-4;
+    if (joyActive && targetVel.lengthSq() > 1e-6) {
       headingArrowDir.copy(targetVel).normalize();
     }
     headingArrow.setDirection(headingArrowDir);
@@ -1736,7 +1738,23 @@ const _startXR = () => {
   renderer.domElement.addEventListener('touchend', (e) => {
     // 避免觸碰搖桿區域時也觸發（搖桿在右下，reticle 需可見才放置）
     if (reticle.visible && reticleStable && !arPlaced && window.orientGuideOk) {
-      arAnchorPos.copy(reticleSmoothed);
+      // 機身網格相對於群組原點（corePos／AR 錨點）有一段旋轉中心偏移（chopperPivotDebug），
+      // 這段偏移會隨機身目前朝向一起旋轉，若不補償，錨點會對齊 reticle，但看起來的機身實體
+      // 卻固定往某個方向偏——換算出目前朝向下、網格中心相對群組原點的世界座標偏移量，
+      // 從錨點反向扣掉，讓「看得到的機身」而不是「看不到的群組原點」對準點擊的地板位置
+      const meshOffset = new THREE.Vector3();
+      if (chopper && chopperBasePos) {
+        meshOffset.set(
+          chopperBasePos.x - chopperPivotDebug.x,
+          chopperBasePos.y - chopperPivotDebug.y,
+          chopperBasePos.z - chopperPivotDebug.z
+        ).applyQuaternion(chopper.quaternion);
+      }
+      // 重新放置時機身視覺位置會直接初始化到「箭頭（拉力錨點）」的位置（見下方 chopperVisualInit
+      // 判斷式），箭頭本身就沿著目前朝向再往前多偏移一段距離（chopperArrowOffsetDebug），
+      // 同樣需要從錨點反向扣掉，才不會讓剛放置的機身固定偏向機頭方向
+      const arrowOffsetVec = smoothedHeadingDir.clone().multiplyScalar(chopperArrowOffsetDebug.value);
+      arAnchorPos.copy(reticleSmoothed).sub(meshOffset).sub(arrowOffsetVec);
       // chopperPosDebug.y 會疊加在 arAnchorPos 上，需先扣掉才能讓飛機剛好在地板上方 0.3m
       arAnchorPos.y += 0.001 - chopperPosDebug.y;
       chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
