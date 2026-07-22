@@ -1312,7 +1312,7 @@ const chopperVertLeashDebug = window.chopperVertLeashDebug;
 const chopperPitchRecoilDebug = window.chopperPitchRecoilDebug;
 const movePos = new THREE.Vector3(0, 0, 0); // 飛行範圍內的相對位置（不含初始位置偏移）
 
-const MAX_SPEED  = 1.6;  // 最大移動速度（單位／秒）
+const MAX_SPEED  = 1.0;  // 最大移動速度（單位／秒，搖桿水平移動用）
 const ACCEL      = 10;   // 推搖桿時的加速反應速度
 const DAMPING    = 3;    // 放開搖桿後的減速阻尼（越大停得越快）
 const TURN_DAMPING = 6;  // 機身轉向跟隨朝向指示棒的阻尼（越大轉向越快）
@@ -1323,6 +1323,10 @@ const VERT_UP_SPEED   = 1.4;  // 按住上升按鈕時的目標上升速度
 const VERT_UP_ACCEL   = 4;    // 上升時速度逼近目標的反應速度（比水平 ACCEL 慢，手感更沉重扎實）
 const VERT_FALL_SPEED = -0.5; // 放開按鈕後的緩慢下沉目標速度（模擬重力，但比 Flappy Bird 溫和許多）
 const VERT_FALL_ACCEL = 1.2;  // 下沉時速度逼近目標的反應速度（更慢，讓上升的衝勁能持續久一點才轉為下沉）
+
+// 垂直/角度回彈（甩動反作用力視覺效果）暫時關閉：上升／移動時機身應保持水平，
+// 之後如果要恢復甩動手感，把這個改回 true 即可，不需要動下面的彈簧-阻尼參數
+const RECOIL_ENABLED = false;
 
 // 機身旋轉偏移量（度），即時數值由「偵錯面板」的旋轉滑桿控制（window.chopperRotDebug）
 // 預設 Y=-90 對應原本寫死的 BASE_YAW：模型靜止時面向 -X，偏移後改為面向正前方（畫面內側 -Z）
@@ -1432,6 +1436,12 @@ let chopperBasePos = null;
 
 let chopper = null;
 let mixer = null;
+// 是否已經確定可以顯示機身：非 AR 模式一開始就是 true；AR 模式要等放置完成才會是 true，
+// 避免模型還沒放置就已經出現在畫面上（見 applyChopperVisibility 的呼叫點）
+let chopperShouldBeVisible = false;
+function applyChopperVisibility() {
+  if (chopper) chopper.visible = chopperShouldBeVisible;
+}
 new GLTFLoader().load('low_poly_helicopter.glb', gltf => {
   const obj = gltf.scene;
 
@@ -1448,6 +1458,7 @@ new GLTFLoader().load('low_poly_helicopter.glb', gltf => {
   chopper = new THREE.Group();
   chopper.add(obj);
   scene.add(chopper);
+  applyChopperVisibility(); // 套用目前已知的顯示狀態（AR 模式且尚未放置時維持隱藏）
 
   // 播放模型內建動畫（例如旋翼自轉）
   if (gltf.animations && gltf.animations.length) {
@@ -1481,7 +1492,9 @@ function animate() {
       chopperBasePos.z - chopperPivotDebug.z
     );
   }
-  if (chopper) {
+  // AR 模式且尚未放置時，機身完全靜止（不累積速度／位移），避免放置前就在畫面裡飄動；
+  // 非 AR 模式沒有放置流程，維持原本一開始就能飛行的行為
+  if (chopper && (!window._xrActive || arPlaced)) {
     // 陀螺儀 → 機身姿態（俯仰／橫滾／朝向），橫式持握時 beta/gamma 互換校正
     const isLandscapeNow = document.body.classList.contains('landscape');
     const effBeta  = isLandscapeNow ? -state.orientData.gamma : state.orientData.beta;
@@ -1578,12 +1591,14 @@ function animate() {
     // 避免按著按鈕、速度朝上升目標加速逼近的過程中也被當成一次「速度變化」而誤觸回彈
     const deltaVelY = velocity.y - prevVelY;
     prevVelY = velocity.y;
-    if (!state.altUp) {
-      pitchRecoilVel += deltaVelY * chopperPitchRecoilDebug.gain;
+    if (RECOIL_ENABLED) {
+      if (!state.altUp) {
+        pitchRecoilVel += deltaVelY * chopperPitchRecoilDebug.gain;
+      }
+      const pitchRecoilAccel = -pitchRecoilOffset * chopperPitchRecoilDebug.stiffness - pitchRecoilVel * chopperPitchRecoilDebug.damping;
+      pitchRecoilVel += pitchRecoilAccel * delta;
+      pitchRecoilOffset += pitchRecoilVel * delta;
     }
-    const pitchRecoilAccel = -pitchRecoilOffset * chopperPitchRecoilDebug.stiffness - pitchRecoilVel * chopperPitchRecoilDebug.damping;
-    pitchRecoilVel += pitchRecoilAccel * delta;
-    pitchRecoilOffset += pitchRecoilVel * delta;
 
     headingEuler.set(headingPitch + pitchRecoilOffset, headingYaw, 0, 'YXZ');
     headingQuat.setFromEuler(headingEuler).multiply(offsetQuat);
@@ -1639,13 +1654,15 @@ function animate() {
     // 避免按著按鈕、速度朝上升目標加速逼近的過程中也被當成一次「速度變化」而誤觸回彈
     const deltaVelYPos = velocity.y - prevVelYPos;
     prevVelYPos = velocity.y;
-    if (!state.altUp) {
-      recoilVelY += deltaVelYPos * chopperVertLeashDebug.gain;
+    if (RECOIL_ENABLED) {
+      if (!state.altUp) {
+        recoilVelY += deltaVelYPos * chopperVertLeashDebug.gain;
+      }
+      const recoilDampingY = chopperVertLeashDebug.damping + Math.abs(recoilVelY) * chopperVertLeashDebug.dampGain;
+      const recoilAccelY = -recoilOffsetY * chopperVertLeashDebug.stiffness - recoilVelY * recoilDampingY;
+      recoilVelY += recoilAccelY * delta;
+      recoilOffsetY += recoilVelY * delta;
     }
-    const recoilDampingY = chopperVertLeashDebug.damping + Math.abs(recoilVelY) * chopperVertLeashDebug.dampGain;
-    const recoilAccelY = -recoilOffsetY * chopperVertLeashDebug.stiffness - recoilVelY * recoilDampingY;
-    recoilVelY += recoilAccelY * delta;
-    recoilOffsetY += recoilVelY * delta;
     chopper.position.y += recoilOffsetY;
 
     // 相機固定不跟隨直升機（AR 模式下相機由 8thWall 追蹤接管）
@@ -1738,25 +1755,13 @@ const _startXR = () => {
   renderer.domElement.addEventListener('touchend', (e) => {
     // 避免觸碰搖桿區域時也觸發（搖桿在右下，reticle 需可見才放置）
     if (reticle.visible && reticleStable && !arPlaced && window.orientGuideOk) {
-      // 機身網格相對於群組原點（corePos／AR 錨點）有一段旋轉中心偏移（chopperPivotDebug），
-      // 這段偏移會隨機身目前朝向一起旋轉，若不補償，錨點會對齊 reticle，但看起來的機身實體
-      // 卻固定往某個方向偏——換算出目前朝向下、網格中心相對群組原點的世界座標偏移量，
-      // 從錨點反向扣掉，讓「看得到的機身」而不是「看不到的群組原點」對準點擊的地板位置
-      const meshOffset = new THREE.Vector3();
-      if (chopper && chopperBasePos) {
-        meshOffset.set(
-          chopperBasePos.x - chopperPivotDebug.x,
-          chopperBasePos.y - chopperPivotDebug.y,
-          chopperBasePos.z - chopperPivotDebug.z
-        ).applyQuaternion(chopper.quaternion);
-      }
-      // 重新放置時機身視覺位置會直接初始化到「箭頭（拉力錨點）」的位置（見下方 chopperVisualInit
-      // 判斷式），箭頭本身就沿著目前朝向再往前多偏移一段距離（chopperArrowOffsetDebug），
-      // 同樣需要從錨點反向扣掉，才不會讓剛放置的機身固定偏向機頭方向
-      const arrowOffsetVec = smoothedHeadingDir.clone().multiplyScalar(chopperArrowOffsetDebug.value);
-      arAnchorPos.copy(reticleSmoothed).sub(meshOffset).sub(arrowOffsetVec);
+      arAnchorPos.copy(reticleSmoothed);
       // chopperPosDebug.y 會疊加在 arAnchorPos 上，需先扣掉才能讓飛機剛好在地板上方 0.3m
       arAnchorPos.y += 0.001 - chopperPosDebug.y;
+      // 放置前機身完全靜止（見 animate() 內的 arPlaced 判斷式），這裡仍重置一次移動狀態，
+      // 避免長按重置後重新放置時，殘留前一次飛行的位置／速度造成新錨點對不準 reticle
+      movePos.set(0, 0, 0);
+      velocity.set(0, 0, 0);
       chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
       recoilOffsetY = 0;
       recoilVelY = 0;
@@ -1765,6 +1770,8 @@ const _startXR = () => {
       pitchRecoilVel = 0;
       arPlaced = true;
       window.arPlaced = true;
+      chopperShouldBeVisible = true;
+      applyChopperVisibility();
       reticle.visible = false;
       const h = document.getElementById('ar-place-hint');
       if (h) h.style.display = 'none';
@@ -1778,6 +1785,8 @@ const _startXR = () => {
     _holdTimer = setTimeout(() => {
       arPlaced = false;
       window.arPlaced = false;
+      chopperShouldBeVisible = false;
+      applyChopperVisibility();
       resetReticleStability();
       const h = document.getElementById('ar-place-hint');
       if (h) h.style.display = '';
@@ -1802,6 +1811,9 @@ if (window.XR8) {
   window.addEventListener('xrloaded', _startXR);
   setTimeout(() => {
     if (!window._xrActive) {
+      // 非 AR 模式沒有「點按放置」流程，直接顯示機身
+      chopperShouldBeVisible = true;
+      applyChopperVisibility();
       requestAnimationFrame(function _fallbackLoop() {
         animate();
         requestAnimationFrame(_fallbackLoop);
