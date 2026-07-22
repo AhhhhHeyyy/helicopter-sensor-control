@@ -1365,6 +1365,14 @@ let pitchRecoilOffset = 0; // 角度回彈層的俯仰角（弧度），直接�
                             // 避免另外用四元數疊加時落在模型未校正的原始網格軸上而看起來不像單純俯仰
 let pitchRecoilVel = 0;    // 角度回彈層的角速度
 let prevVelY = 0;          // 上一幀的垂直飛行速度，用來偵測「速度變化」以觸發回彈衝量
+
+// 上升傾角：按住上升按鈕時機頭逐漸上仰（最多 35 度），放開後逐漸校正回水平；
+// 除了按著上升按鈕以外的所有狀態（移動、下沉、靜止）機頭一律維持水平，與朝向指示棒的
+// 俯仰角（headingPitch，恆為 0，見上方 headingArrowDir 只取水平分量）完全無關
+const ASCEND_PITCH_MAX  = THREE.MathUtils.degToRad(35); // 上仰角上限
+const ASCEND_PITCH_RATE = 4; // 逼近目標角度的反應速度（上仰／回正共用）
+let ascendPitch = 0; // 目前上升傾角（弧度）
+
 const headingQuat = new THREE.Quaternion(); // 機身顯示朝向：對齊朝向指示棒方向
 const headingEuler = new THREE.Euler();
 const UP_AXIS = new THREE.Vector3(0, 1, 0);
@@ -1556,12 +1564,13 @@ function animate() {
       .multiplyScalar(MAX_SPEED);
     targetVel.y = vertTarget;
 
-    // 更新朝向指示棒方向：只在搖桿有水平輸入時才更新（上升按鈕造成的垂直下沉/上升不列入計算，
-    // 避免尚未移動時就因為預設的緩慢下沉目標速度而讓機頭一直想朝下）；
+    // 更新朝向指示棒方向：只在搖桿有水平輸入時才更新，且只取水平分量（垂直的上升/下沉
+    // 完全不影響朝向棒方向，機身俯仰角改由下方的「上升傾角」獨立控制）；
     // 沒有水平輸入時維持上一次的朝向不變（預設維持機頭朝前）——機頭不再跟著手機朝向（陀螺儀）轉動，只跟著移動方向轉
     const joyActive = (state.joyH * state.joyH + state.joyV * state.joyV) > 1e-4;
-    if (joyActive && targetVel.lengthSq() > 1e-6) {
-      headingArrowDir.copy(targetVel).normalize();
+    const horizVelLengthSq = targetVel.x * targetVel.x + targetVel.z * targetVel.z;
+    if (joyActive && horizVelLengthSq > 1e-6) {
+      headingArrowDir.set(targetVel.x, 0, targetVel.z).normalize();
     }
     headingArrow.setDirection(headingArrowDir);
 
@@ -1600,7 +1609,11 @@ function animate() {
       pitchRecoilOffset += pitchRecoilVel * delta;
     }
 
-    headingEuler.set(headingPitch + pitchRecoilOffset, headingYaw, 0, 'YXZ');
+    // 上升傾角：按住上升按鈕時逼近上仰上限，放開後逼近水平（0）
+    const ascendPitchTarget = state.altUp ? ASCEND_PITCH_MAX : 0;
+    ascendPitch += (ascendPitchTarget - ascendPitch) * Math.min(1, ASCEND_PITCH_RATE * delta);
+
+    headingEuler.set(headingPitch + pitchRecoilOffset + ascendPitch, headingYaw, 0, 'YXZ');
     headingQuat.setFromEuler(headingEuler).multiply(offsetQuat);
     chopper.quaternion.slerp(headingQuat, Math.min(1, TURN_DAMPING * delta));
 
