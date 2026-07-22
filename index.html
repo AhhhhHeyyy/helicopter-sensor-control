@@ -113,21 +113,37 @@
   #swap-btn:active { opacity: 0.7; }
   #controls-row { display: flex; align-items: center; justify-content: center; gap: 24px; }
   #controls-row.swapped { flex-direction: row-reverse; }
-  #grab-btn {
-    width: min(100px, calc(var(--joy-size) * 0.5));
-    height: min(100px, calc(var(--joy-size) * 0.5));
+  #grab-section {
+    display: flex; flex-direction: column; align-items: center;
+    gap: clamp(10px, 2dvh, 16px);
+  }
+  .action-btn {
+    width: min(88px, calc(var(--joy-size) * 0.4));
+    height: min(88px, calc(var(--joy-size) * 0.4));
     border-radius: 50%;
-    border: 2px solid rgba(239,68,68,0.55);
-    background: radial-gradient(circle at 40% 35%, #4e1a1a, #2c0a0a 75%, #1a0505);
-    color: #fff; font-size: 1rem; font-weight: 700;
+    color: #fff; font-size: 0.95rem; font-weight: 700;
     cursor: pointer; touch-action: none; user-select: none;
     -webkit-tap-highlight-color: transparent;
-    box-shadow: 0 0 16px rgba(239,68,68,0.18);
     transition: background 0.08s, box-shadow 0.08s, transform 0.08s;
+  }
+  #grab-btn {
+    border: 2px solid rgba(239,68,68,0.55);
+    background: radial-gradient(circle at 40% 35%, #4e1a1a, #2c0a0a 75%, #1a0505);
+    box-shadow: 0 0 16px rgba(239,68,68,0.18);
   }
   #grab-btn.pressed {
     background: radial-gradient(circle at 40% 35%, #b33030, #751c1c 75%, #430a0a);
     box-shadow: 0 0 28px rgba(239,68,68,0.55);
+    transform: scale(0.95);
+  }
+  #alt-btn {
+    border: 2px solid rgba(34,197,94,0.55);
+    background: radial-gradient(circle at 40% 35%, #1a4e2a, #0a2c14 75%, #051a08);
+    box-shadow: 0 0 16px rgba(34,197,94,0.18);
+  }
+  #alt-btn.pressed {
+    background: radial-gradient(circle at 40% 35%, #30b354, #1c751c 75%, #0a430a);
+    box-shadow: 0 0 28px rgba(34,197,94,0.55);
     transform: scale(0.95);
   }
   #joy-base {
@@ -213,8 +229,9 @@
     margin-bottom: 4dvh;
   }
   body.landscape #grab-section {
-    flex: 1; display: flex;
+    flex: 1; display: flex; flex-direction: column;
     align-items: center; justify-content: center;
+    gap: clamp(8px, 2dvh, 14px);
   }
   body.landscape #joy-wrapper {
     flex: 1; display: flex;
@@ -222,10 +239,10 @@
     padding-right: max(env(safe-area-inset-right, 0px), 2%);
   }
   /* ── 橫式自適應大小 ── */
-  body.landscape #grab-btn {
-    width: min(150px, calc(var(--joy-size) * 0.68));
-    height: min(150px, calc(var(--joy-size) * 0.68));
-    font-size: 1.1rem;
+  body.landscape .action-btn {
+    width: min(110px, calc(var(--joy-size) * 0.48));
+    height: min(110px, calc(var(--joy-size) * 0.48));
+    font-size: 1rem;
   }
   /* ── 姿態引導遮罩：進入即時顯示後，需先將手機轉到正確角度才會自動隱藏 ── */
   #orient-guide {
@@ -315,6 +332,12 @@
       <div id="sb-joy">搖桿：H0.00 V0.00</div>
       <div id="sb-grab">抓取：放開</div>
       <div id="sb-hz">頻率：- Hz</div>
+      <div id="sb-gyro-toggle" style="margin-top:8px;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input type="checkbox" id="gyro-control-toggle">
+          陀螺儀控制角度／方向（實驗性，預設關閉）
+        </label>
+      </div>
     </div>
     <div id="cam-debug">
       <div class="cam-row">
@@ -545,7 +568,10 @@
         <button id="swap-btn">⇄ 左右對調</button>
       </div>
       <div id="controls-row">
-        <div id="grab-section"><button id="grab-btn">抓取</button></div>
+        <div id="grab-section">
+          <button id="alt-btn" class="action-btn">上升</button>
+          <button id="grab-btn" class="action-btn">抓取</button>
+        </div>
         <div id="joy-wrapper"><div id="joy-base">
         <svg id="joy-svg" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg">
           <!-- 外圈分段裝飾弧 -->
@@ -574,11 +600,17 @@ window.controlState = {
   accelData:  { x: 0, y: 0, z: 0 },
   joyH: 0, joyV: 0,
   grabPressed: false,
+  altUp: false, // 上升按鈕是否按住中（取代原本陀螺儀傾斜控制上下）
   alphaOffset: null, // 啟動感測器當下的 alpha，作為機頭正前方的基準
   betaOffset: null,  // 啟動感測器當下的 beta，作為「水平飛行」姿態基準（直拿手機時 beta≈90°）
   gammaOffset: null  // 啟動感測器當下的 gamma，作為「水平飛行」姿態基準
 };
 const cs = window.controlState;
+// 陀螺儀控制機身角度／移動方向的開關，預設關閉；之後可在偵錯面板的核取方塊即時開啟
+window.gyroControlEnabled = false;
+document.getElementById('gyro-control-toggle').addEventListener('change', e => {
+  window.gyroControlEnabled = e.target.checked;
+});
 let hzCount = 0, lastHzTime = Date.now();
 let displayInterval = null, hzInterval = null;
 
@@ -1119,6 +1151,20 @@ grabBtn.addEventListener('touchcancel', e => { e.preventDefault(); setGrab(false
 grabBtn.addEventListener('mousedown', () => setGrab(true));
 document.addEventListener('mouseup',  () => { if (cs.grabPressed) setGrab(false); });
 
+// ── 上升按鈕（按住持續上升，放開即停止施力，取代原本陀螺儀傾斜控制上下）────
+const altBtn = document.getElementById('alt-btn');
+
+function setAltUp(pressed) {
+  cs.altUp = pressed;
+  altBtn.classList.toggle('pressed', pressed);
+}
+
+altBtn.addEventListener('touchstart',  e => { e.preventDefault(); setAltUp(true);  }, { passive: false });
+altBtn.addEventListener('touchend',    e => { e.preventDefault(); setAltUp(false); }, { passive: false });
+altBtn.addEventListener('touchcancel', e => { e.preventDefault(); setAltUp(false); }, { passive: false });
+altBtn.addEventListener('mousedown', () => setAltUp(true));
+document.addEventListener('mouseup',  () => { if (cs.altUp) setAltUp(false); });
+
 // ── 左右對調 ──────────────────────────────────────────────
 let swapped = false;
 document.getElementById('swap-btn').addEventListener('click', () => {
@@ -1167,6 +1213,7 @@ document.getElementById('disconnect-btn').addEventListener('click', () => {
   stopDisplayLoop();
   joyReset(); keyHeld.clear();
   setGrab(false);
+  setAltUp(false);
   unlockOrientation();
   cs.alphaOffset = null;
   cs.betaOffset = null;
@@ -1185,7 +1232,7 @@ document.getElementById('orient-btn').addEventListener('click', () => {
 
 </script>
 
-<!-- ── 3D 直升機模型：陀螺儀控制姿態、搖桿控制空間位置 ── -->
+<!-- ── 3D 直升機模型：搖桿控制水平位置、上升按鈕控制垂直位置（陀螺儀控制角度/方向預設關閉） ── -->
 <script type="importmap">
 {
   "imports": {
@@ -1266,10 +1313,16 @@ const chopperPitchRecoilDebug = window.chopperPitchRecoilDebug;
 const movePos = new THREE.Vector3(0, 0, 0); // 飛行範圍內的相對位置（不含初始位置偏移）
 
 const MAX_SPEED  = 1.6;  // 最大移動速度（單位／秒）
-const ACCEL      = 10;   // 推搖桿／陀螺儀輔助時的加速反應速度
+const ACCEL      = 10;   // 推搖桿時的加速反應速度
 const DAMPING    = 3;    // 放開搖桿後的減速阻尼（越大停得越快）
 const TURN_DAMPING = 6;  // 機身轉向跟隨朝向指示棒的阻尼（越大轉向越快）
-const TILT_DEADZONE = 0.05; // 上下飛行的傾斜死區（|flightForward.y| 小於此值視為 0）
+
+// 上升按鈕控制垂直移動（取代原本陀螺儀傾斜控制上下），參考 Flappy Bird 的單鍵操作，
+// 但加速/減速都改用較慢的反應速度，讓阻尼與施力的持續感更強，不會像 Flappy Bird 那樣一觸即發、忽上忽下
+const VERT_UP_SPEED   = 1.4;  // 按住上升按鈕時的目標上升速度
+const VERT_UP_ACCEL   = 4;    // 上升時速度逼近目標的反應速度（比水平 ACCEL 慢，手感更沉重扎實）
+const VERT_FALL_SPEED = -0.5; // 放開按鈕後的緩慢下沉目標速度（模擬重力，但比 Flappy Bird 溫和許多）
+const VERT_FALL_ACCEL = 1.2;  // 下沉時速度逼近目標的反應速度（更慢，讓上升的衝勁能持續久一點才轉為下沉）
 
 // 機身旋轉偏移量（度），即時數值由「偵錯面板」的旋轉滑桿控制（window.chopperRotDebug）
 // 預設 Y=-90 對應原本寫死的 BASE_YAW：模型靜止時面向 -X，偏移後改為面向正前方（畫面內側 -Z）
@@ -1457,9 +1510,11 @@ function animate() {
       initialDeviceQuatInv = initialDeviceQuat.clone().invert();
     }
 
-    // 機身姿態相對於起飛時的變化量：讓搖桿前後左右的方向跟著機身傾斜旋轉（含上下）
-    // 尚未校正（無陀螺儀資料）時維持單位旋轉，避免 DEVICE_TO_THREE 的固定校正把方向轉去 Y 軸
-    if (initialDeviceQuatInv) {
+    // 機身姿態相對於起飛時的變化量：讓搖桿前後左右的方向跟著機身傾斜旋轉。
+    // 由 window.gyroControlEnabled 開關控制（預設關閉，可在偵錯面板即時開啟）；
+    // 關閉時搖桿方向固定不受手機傾斜影響，尚未校正（無陀螺儀資料）時同樣維持單位旋轉，
+    // 避免 DEVICE_TO_THREE 的固定校正把方向轉去 Y 軸
+    if (window.gyroControlEnabled && initialDeviceQuatInv) {
       deltaQuat.copy(deviceQuat).multiply(initialDeviceQuatInv);
     } else {
       deltaQuat.identity();
@@ -1477,18 +1532,16 @@ function animate() {
     flightForwardXZ.normalize();
     flightRightXZ.normalize();
 
-    // 上下移動：由機身傾斜角度（flightForward.y）決定，但只有搖桿有輸入（水平移動）時才會疊加，
-    // 搖桿放開時飛機完全靜止，不會因為單純傾斜手機而上下漂移
-    let vertInput = flightForward.y;
-    if (Math.abs(vertInput) < TILT_DEADZONE) vertInput = 0;
-    const joyActive = (state.joyH * state.joyH + state.joyV * state.joyV) > 1e-4;
-    if (!joyActive) vertInput = 0;
+    // 上下移動：按住「上升」按鈕才上升，放開後緩慢下沉（類似 Flappy Bird 的單鍵操作，
+    // 但上升/下沉都用較慢的反應速度逼近目標速度，阻尼與施力的持續感更強）
+    const vertTarget = state.altUp ? VERT_UP_SPEED : VERT_FALL_SPEED;
+    const vertAccel  = state.altUp ? VERT_UP_ACCEL : VERT_FALL_ACCEL;
 
-    // 搖桿輸入（H=左右、V=前後）控制水平移動；垂直移動由上方的傾斜角度疊加
+    // 搖桿輸入（H=左右、V=前後）控制水平移動；垂直移動改由上升按鈕獨立控制
     targetVel.copy(flightRightXZ).multiplyScalar(state.joyH)
       .addScaledVector(flightForwardXZ, state.joyV)
       .multiplyScalar(MAX_SPEED);
-    targetVel.y = vertInput * MAX_SPEED;
+    targetVel.y = vertTarget;
 
     // 更新朝向指示棒方向：只在有實際飛行速度（搖桿輸入，含其疊加的傾斜垂直分量）時才更新，
     // 沒有輸入時維持上一次的朝向不變——機頭不再跟著手機朝向（陀螺儀）轉動，只跟著移動方向轉
@@ -1519,11 +1572,11 @@ function animate() {
     // （上升速度變小/停止：踢出負向衝量，頭部先下沉再彈回；下降變小/停止則相反）
     // 直接加進 headingPitch 一起組成 headingEuler，確保回彈套用的是同一個乾淨的俯仰軸，
     // 而不是模型未校正前的原始網格軸（那樣疊加出來的旋轉方向會怪怪的、不像單純俯仰）
-    // 只在「沒有垂直輸入」（targetVel.y 為 0，即放開搖桿／傾斜回中）時才踢衝量，
-    // 避免搖桿還按著、速度朝目標加速逼近的過程中也被當成一次「速度變化」而誤觸回彈
+    // 只在「沒有按上升按鈕」（放開後緩慢下沉）時才踢衝量，
+    // 避免按著按鈕、速度朝上升目標加速逼近的過程中也被當成一次「速度變化」而誤觸回彈
     const deltaVelY = velocity.y - prevVelY;
     prevVelY = velocity.y;
-    if (targetVel.y === 0) {
+    if (!state.altUp) {
       pitchRecoilVel += deltaVelY * chopperPitchRecoilDebug.gain;
     }
     const pitchRecoilAccel = -pitchRecoilOffset * chopperPitchRecoilDebug.stiffness - pitchRecoilVel * chopperPitchRecoilDebug.damping;
@@ -1535,7 +1588,7 @@ function animate() {
     chopper.quaternion.slerp(headingQuat, Math.min(1, TURN_DAMPING * delta));
 
     velocity.x = approachValue(velocity.x, targetVel.x, delta);
-    velocity.y = approachValue(velocity.y, targetVel.y, delta);
+    velocity.y += (targetVel.y - velocity.y) * Math.min(1, vertAccel * delta);
     velocity.z = approachValue(velocity.z, targetVel.z, delta);
 
     const nextX = movePos.x + velocity.x * delta;
@@ -1580,11 +1633,11 @@ function animate() {
     // 才會踢一下彈簧，讓機身先多位移一點、再準確彈回原本該在的高度——飛行中速度穩定
     // （不論是否為 0）時不會有持續偏移，只有加速/減速瞬間才看得到這個反作用力效果
     // （上升變慢/停止：先多沉一點再彈回；下降變慢/停止：先多衝高一點再彈回）
-    // 只在「沒有垂直輸入」（targetVel.y 為 0，即放開搖桿／傾斜回中）時才踢衝量，
-    // 避免搖桿還按著、速度朝目標加速逼近的過程中也被當成一次「速度變化」而誤觸回彈
+    // 只在「沒有按上升按鈕」（放開後緩慢下沉）時才踢衝量，
+    // 避免按著按鈕、速度朝上升目標加速逼近的過程中也被當成一次「速度變化」而誤觸回彈
     const deltaVelYPos = velocity.y - prevVelYPos;
     prevVelYPos = velocity.y;
-    if (targetVel.y === 0) {
+    if (!state.altUp) {
       recoilVelY += deltaVelYPos * chopperVertLeashDebug.gain;
     }
     const recoilDampingY = chopperVertLeashDebug.damping + Math.abs(recoilVelY) * chopperVertLeashDebug.dampGain;
