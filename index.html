@@ -1602,11 +1602,11 @@ function animate() {
 
     // 機頭沒轉到接近目標朝向前（誤差超過門檻）節流閥維持 0，讓機身留在原地把轉向轉完，
     // 旋轉中心（機頭）像圓心一樣固定不動，只有機身/機尾隨轉向角度掃出弧線；誤差進入門檻
-    // 後油門用平滑曲線（smoothstep）從 0 慢慢升到全開，而不是誤差一跨過門檻就瞬間全開——
-    // 避免「剛好轉到位那一瞬間」油門從 0 跳成滿速，感覺像突然被彈射出去
+    // 後油門用緩出曲線（ease-out）從 0 升到全開——一進門檻就有感的起步力道，接近全開時
+    // 才慢慢收斂，避免像 smoothstep 那樣起手完全沒力道、也避免像跨門檻瞬間全開那樣突兀
     const headingErrAbs = Math.abs(headingYawDelta);
     const alignT = THREE.MathUtils.clamp(1 - headingErrAbs / TURN_ALIGN_THRESHOLD, 0, 1);
-    const alignmentFactor = alignT * alignT * (3 - 2 * alignT); // smoothstep 緩入緩出
+    const alignmentFactor = 1 - (1 - alignT) * (1 - alignT); // ease-out：起步快、收尾緩
     const throttle = alignmentFactor * Math.min(1, Math.hypot(state.joyH, state.joyV));
     targetVel.x = currentHeadingDir.x * throttle * MAX_SPEED;
     targetVel.z = currentHeadingDir.z * throttle * MAX_SPEED;
