@@ -1321,9 +1321,6 @@ const DAMPING    = 3;    // 放開搖桿後的減速阻尼（越大停得越快�
 // stiffness 越大轉得越快／越有力，damping 需大於等於臨界阻尼（2*sqrt(stiffness)）才不會轉過頭來回擺盪
 const HEADING_SPRING_STIFFNESS = 30;
 const HEADING_SPRING_DAMPING   = 12;
-// 機頭朝向與目標朝向的誤差角（弧度）：超過這個門檻節流閥維持 0（轉向未完成前完全不出發，
-// 旋轉中心像圓心一樣固定不動）；進入門檻後油門才開始隨誤差縮小平滑升起，而非一跨過門檻就全開
-const TURN_ALIGN_THRESHOLD = THREE.MathUtils.degToRad(8);
 
 // 上升按鈕控制垂直移動（取代原本陀螺儀傾斜控制上下），參考 Flappy Bird 的單鍵操作，
 // 但加速/減速都改用較慢的反應速度，讓阻尼與施力的持續感更強，不會像 Flappy Bird 那樣一觸即發、忽上忽下
@@ -1375,8 +1372,8 @@ let pitchRecoilOffset = 0; // 角度回彈層的俯仰角（弧度），直接�
 let pitchRecoilVel = 0;    // 角度回彈層的角速度
 let prevVelY = 0;          // 上一幀的垂直飛行速度，用來偵測「速度變化」以觸發回彈衝量
 // 機身目前的水平朝向角（yaw，弧度）：飛機式操控——搖桿只決定「目標朝向」，機頭用彈簧-阻尼
-// 逐漸轉過去（見上方 HEADING_SPRING_STIFFNESS/DAMPING），不是瞬間對齊；轉到誤差進入
-// TURN_ALIGN_THRESHOLD 門檻內才會出發，移動方向永遠沿這個「目前朝向」推進，不是沿搖桿方向
+// 逐漸轉過去（見上方 HEADING_SPRING_STIFFNESS/DAMPING），不是瞬間對齊；油門大小連續地跟著
+// 對齊程度走（見下方 alignmentFactor），移動方向永遠沿這個「目前朝向」推進，不是沿搖桿方向
 let currentHeadingYaw = 0;
 let headingYawVel = 0; // 機頭朝向角的角速度（弧度／秒），轉向彈簧-阻尼的狀態量
 
@@ -1600,13 +1597,12 @@ function animate() {
     currentHeadingYaw += headingYawVel * delta;
     currentHeadingDir.set(-Math.sin(currentHeadingYaw), 0, -Math.cos(currentHeadingYaw));
 
-    // 機頭沒轉到接近目標朝向前（誤差超過門檻）節流閥維持 0，讓機身留在原地把轉向轉完，
-    // 旋轉中心（機頭）像圓心一樣固定不動，只有機身/機尾隨轉向角度掃出弧線；誤差進入門檻
-    // 後油門用緩出曲線（ease-out）從 0 升到全開——一進門檻就有感的起步力道，接近全開時
-    // 才慢慢收斂，避免像 smoothstep 那樣起手完全沒力道、也避免像跨門檻瞬間全開那樣突兀
+    // 油門大小連續地跟著「機頭朝向對齊程度」走，不設門檻、不分兩段：誤差還很大（剛開始轉、
+    // 或大角度轉彎）時油門接近 0，機身幾乎只轉不動；誤差越縮小油門越自然升高，轉到位時油門
+    // 剛好接近全開。轉向跟出發因此是同一條連續曲線，不會有「轉完→停頓→再起步」的分段感。
+    // cos(誤差) 是最貼近「推力沿目前朝向的有效分量」的物理量：誤差 90 度以上完全不出力。
     const headingErrAbs = Math.abs(headingYawDelta);
-    const alignT = THREE.MathUtils.clamp(1 - headingErrAbs / TURN_ALIGN_THRESHOLD, 0, 1);
-    const alignmentFactor = 1 - (1 - alignT) * (1 - alignT); // ease-out：起步快、收尾緩
+    const alignmentFactor = Math.max(0, Math.cos(headingErrAbs));
     const throttle = alignmentFactor * Math.min(1, Math.hypot(state.joyH, state.joyV));
     targetVel.x = currentHeadingDir.x * throttle * MAX_SPEED;
     targetVel.z = currentHeadingDir.z * throttle * MAX_SPEED;
