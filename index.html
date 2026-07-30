@@ -1361,14 +1361,16 @@ let chopperVisualInit = false; // 是否已初始化機身視覺位置（避免�
 let recoilOffsetY = 0; // 垂直回彈層的位移（疊加在 chopper.position.y 上，純視覺效果）
 let recoilVelY = 0;    // 垂直回彈層的速度
 let prevVelYPos = 0;   // 上一幀的垂直飛行速度，用來偵測「速度變化」以觸發垂直位移回彈衝量
-let pitchRecoilOffset = 0; // 角度回彈層的俯仰角（弧度），直接加進 headingPitch 一起套用，
+let pitchRecoilOffset = 0; // 角度回彈層的俯仰角（弧度），直接加進 headingEuler 的俯仰軸一起套用，
                             // 避免另外用四元數疊加時落在模型未校正的原始網格軸上而看起來不像單純俯仰
 let pitchRecoilVel = 0;    // 角度回彈層的角速度
 let prevVelY = 0;          // 上一幀的垂直飛行速度，用來偵測「速度變化」以觸發回彈衝量
+let currentHeadingYaw = 0; // 機身目前的水平朝向角（yaw，弧度）：由「機身→箭頭（機頭牽引點）」的
+                            // 連線方向決定，只在兩者有明顯偏移時更新，牽引點與機身重合（靜止/已追上）時維持上一次角度
 
 // 上升傾角：按住上升按鈕時機頭逐漸上仰（最多 35 度），放開後逐漸校正回水平；
-// 除了按著上升按鈕以外的所有狀態（移動、下沉、靜止）機頭一律維持水平，與朝向指示棒的
-// 俯仰角（headingPitch，恆為 0，見上方 headingArrowDir 只取水平分量）完全無關
+// 除了按著上升按鈕以外的所有狀態（移動、下沉、靜止）機頭一律維持水平——機身朝向只由
+// currentHeadingYaw（水平朝向角）決定，不含俯仰分量，上仰完全獨立由這層疊加
 const ASCEND_PITCH_MAX  = THREE.MathUtils.degToRad(35); // 上仰角上限
 const ASCEND_PITCH_RATE = 4; // 逼近目標角度的反應速度（上仰／回正共用）
 let ascendPitch = 0; // 目前上升傾角（弧度）
@@ -1566,7 +1568,8 @@ function animate() {
 
     // 更新朝向指示棒方向：只在搖桿有水平輸入時才更新，且只取水平分量（垂直的上升/下沉
     // 完全不影響朝向棒方向，機身俯仰角改由下方的「上升傾角」獨立控制）；
-    // 沒有水平輸入時維持上一次的朝向不變（預設維持機頭朝前）——機頭不再跟著手機朝向（陀螺儀）轉動，只跟著移動方向轉
+    // 沒有水平輸入時維持上一次的方向不變——這個方向只用來決定箭頭（機頭牽引點）前移的方向，
+    // 機身實際朝向改由下方「機身→箭頭」的連線向量決定，不再直接套用這裡的方向
     const joyActive = (state.joyH * state.joyH + state.joyV * state.joyV) > 1e-4;
     const horizVelLengthSq = targetVel.x * targetVel.x + targetVel.z * targetVel.z;
     if (joyActive && horizVelLengthSq > 1e-6) {
@@ -1574,48 +1577,9 @@ function animate() {
     }
     headingArrow.setDirection(headingArrowDir);
 
-    // 朝向方向先做平滑（lerp），避免搖桿瞬間轉向時方向本身瞬間跳變，
-    // 機身旋轉與位置偏移都改用這個平滑後的方向
+    // 方向先做平滑（lerp），避免搖桿瞬間轉向時箭頭前移方向瞬間跳變
     smoothedHeadingDir.lerp(headingArrowDir, Math.min(1, TURN_DAMPING * delta));
     if (smoothedHeadingDir.lengthSq() > 1e-6) smoothedHeadingDir.normalize();
-
-    // 機身顯示朝向跟隨朝向指示棒（飛行方向），offsetQuat 維持模型的基準校正
-    // 用 slerp 加阻尼，避免搖桿瞬間轉向時機身角度突然跳變。
-    // 朝向改用「水平朝向角（yaw，atan2 連續無奇異點）＋ 俯仰角（pitch）」分開計算，
-    // 不直接用 setFromUnitVectors 對齊 3D 方向向量：當飛行方向接近正後方（FORWARD_AXIS
-    // 的反方向）時，setFromUnitVectors 為了對齊向量所選的旋轉軸會因些微上下/左右抖動
-    // 而劇烈跳動（同一瞬間可能選到接近垂直或水平的軸），導致機身像後空翻一樣亂轉；
-    // yaw/pitch 分開算則兩者皆連續平滑，往正後方飛只會是穩定的水平轉向。
-    const headingYaw = Math.atan2(-smoothedHeadingDir.x, -smoothedHeadingDir.z);
-    const headingHorizLen = Math.hypot(smoothedHeadingDir.x, smoothedHeadingDir.z);
-    const headingPitch = Math.atan2(smoothedHeadingDir.y, headingHorizLen);
-
-    // 角度回彈層：彈簧目標永遠是 0（原本角度），只有「垂直速度變化」的瞬間才會踢一下彈簧，
-    // 讓機身先多轉一點角度、再彈回原本朝向——跟朝著陀螺儀角度持續同步的穩態偏移不同，
-    // 這裡疊加的是一次性衝量，效果不會被目前的傾斜角度蓋過去
-    // （上升速度變小/停止：踢出負向衝量，頭部先下沉再彈回；下降變小/停止則相反）
-    // 直接加進 headingPitch 一起組成 headingEuler，確保回彈套用的是同一個乾淨的俯仰軸，
-    // 而不是模型未校正前的原始網格軸（那樣疊加出來的旋轉方向會怪怪的、不像單純俯仰）
-    // 只在「沒有按上升按鈕」（放開後緩慢下沉）時才踢衝量，
-    // 避免按著按鈕、速度朝上升目標加速逼近的過程中也被當成一次「速度變化」而誤觸回彈
-    const deltaVelY = velocity.y - prevVelY;
-    prevVelY = velocity.y;
-    if (RECOIL_ENABLED) {
-      if (!state.altUp) {
-        pitchRecoilVel += deltaVelY * chopperPitchRecoilDebug.gain;
-      }
-      const pitchRecoilAccel = -pitchRecoilOffset * chopperPitchRecoilDebug.stiffness - pitchRecoilVel * chopperPitchRecoilDebug.damping;
-      pitchRecoilVel += pitchRecoilAccel * delta;
-      pitchRecoilOffset += pitchRecoilVel * delta;
-    }
-
-    // 上升傾角：按住上升按鈕時逼近上仰上限，放開後逼近水平（0）
-    const ascendPitchTarget = state.altUp ? ASCEND_PITCH_MAX : 0;
-    ascendPitch += (ascendPitchTarget - ascendPitch) * Math.min(1, ASCEND_PITCH_RATE * delta);
-
-    headingEuler.set(headingPitch + pitchRecoilOffset + ascendPitch, headingYaw, 0, 'YXZ');
-    headingQuat.setFromEuler(headingEuler).multiply(offsetQuat);
-    chopper.quaternion.slerp(headingQuat, Math.min(1, TURN_DAMPING * delta));
 
     velocity.x = approachValue(velocity.x, targetVel.x, delta);
     velocity.y += (targetVel.y - velocity.y) * Math.min(1, vertAccel * delta);
@@ -1641,12 +1605,12 @@ function animate() {
       arAnchorPos.z + movePos.z + chopperPosDebug.z
     );
 
-    // 箭頭沿飛行方向前移（由偵錯面板「箭頭前移量」滑桿即時調整），直接跟著搖桿輸入走，
-    // 不受機身慣性影響——箭頭本身就是被「拉著」的那一頭
+    // 箭頭（機頭牽引點）沿飛行方向前移（由偵錯面板「箭頭前移量」滑桿即時調整），直接跟著
+    // 搖桿輸入走，不受機身慣性影響——箭頭就是「機頭」，機身是被它牽著走的機尾
     arrowPos.copy(corePos).addScaledVector(smoothedHeadingDir, chopperArrowOffsetDebug.value);
     headingArrow.position.copy(arrowPos);
 
-    // 機身像被繩子綁在箭頭上一樣，用彈簧-阻尼系統追向箭頭位置：
+    // 機身（機尾）像被繩子綁在箭頭（機頭）上一樣，用彈簧-阻尼系統追向箭頭位置：
     // 箭頭先動，機身靠慣性被拉著走，會有滯後與甩尾感（強度/阻尼由偵錯面板「拉力強度／拉力阻尼」調整）
     if (!chopperVisualInit) {
       chopperVisualPos.copy(arrowPos);
@@ -1658,6 +1622,43 @@ function animate() {
     chopperVisualVel.addScaledVector(leashAccel, delta);
     chopperVisualPos.addScaledVector(chopperVisualVel, delta);
     chopper.position.copy(chopperVisualPos);
+
+    // 機身朝向＝「機身（機尾）指向箭頭（機頭牽引點）」的連線方向，取代原本直接套用搖桿
+    // 方向算朝向：轉彎瞬間機尾還沒追上機頭，兩者連線會偏斜，自然產生「機頭拉著機身轉、
+    // 機尾甩出去」的牽引效果；牽引點與機身重合（靜止或已追上）時維持上一次的朝向角，
+    // 避免 atan2(0, 0) 把朝向瞬間拉回預設方向。用水平朝向角（yaw，atan2 連續無奇異點）
+    // 而非直接 setFromUnitVectors 對齊 3D 向量，避免飛行方向接近正後方時旋轉軸選擇不穩定、
+    // 機身像後空翻一樣亂轉。
+    const tailToNoseX = arrowPos.x - chopperVisualPos.x;
+    const tailToNoseZ = arrowPos.z - chopperVisualPos.z;
+    if (tailToNoseX * tailToNoseX + tailToNoseZ * tailToNoseZ > 1e-6) {
+      currentHeadingYaw = Math.atan2(-tailToNoseX, -tailToNoseZ);
+    }
+
+    // 角度回彈層：彈簧目標永遠是 0（原本角度），只有「垂直速度變化」的瞬間才會踢一下彈簧，
+    // 讓機身先多轉一點角度、再彈回原本朝向——跟朝著陀螺儀角度持續同步的穩態偏移不同，
+    // 這裡疊加的是一次性衝量，效果不會被目前的傾斜角度蓋過去
+    // （上升速度變小/停止：踢出負向衝量，頭部先下沉再彈回；下降變小/停止則相反）
+    // 只在「沒有按上升按鈕」（放開後緩慢下沉）時才踢衝量，
+    // 避免按著按鈕、速度朝上升目標加速逼近的過程中也被當成一次「速度變化」而誤觸回彈
+    const deltaVelY = velocity.y - prevVelY;
+    prevVelY = velocity.y;
+    if (RECOIL_ENABLED) {
+      if (!state.altUp) {
+        pitchRecoilVel += deltaVelY * chopperPitchRecoilDebug.gain;
+      }
+      const pitchRecoilAccel = -pitchRecoilOffset * chopperPitchRecoilDebug.stiffness - pitchRecoilVel * chopperPitchRecoilDebug.damping;
+      pitchRecoilVel += pitchRecoilAccel * delta;
+      pitchRecoilOffset += pitchRecoilVel * delta;
+    }
+
+    // 上升傾角：按住上升按鈕時逼近上仰上限，放開後逼近水平（0）
+    const ascendPitchTarget = state.altUp ? ASCEND_PITCH_MAX : 0;
+    ascendPitch += (ascendPitchTarget - ascendPitch) * Math.min(1, ASCEND_PITCH_RATE * delta);
+
+    headingEuler.set(pitchRecoilOffset + ascendPitch, currentHeadingYaw, 0, 'YXZ');
+    headingQuat.setFromEuler(headingEuler).multiply(offsetQuat);
+    chopper.quaternion.slerp(headingQuat, Math.min(1, TURN_DAMPING * delta));
 
     // 垂直回彈層：彈簧目標永遠是 0（機身真正該在的位置），只有「垂直速度變化」的瞬間
     // 才會踢一下彈簧，讓機身先多位移一點、再準確彈回原本該在的高度——飛行中速度穩定
