@@ -366,14 +366,14 @@
     </div>
     <div class="qa-row">
       <label for="chopper-y">上下定位</label>
-      <input type="range" id="chopper-y" min="-20" max="20" step="0.01" value="0.32">
-      <span id="chopper-y-val">0.32</span>
+      <input type="range" id="chopper-y" min="-20" max="20" step="0.01" value="-0.44">
+      <span id="chopper-y-val">-0.44</span>
       <input type="number" class="cam-max hidden" id="chopper-y-max" value="20" step="1">
     </div>
     <div class="qa-row">
       <label for="chopper-scale">縮放</label>
-      <input type="range" id="chopper-scale" min="0.1" max="5" step="0.05" value="1.45">
-      <span id="chopper-scale-val">1.45</span>
+      <input type="range" id="chopper-scale" min="0.1" max="5" step="0.05" value="0.65">
+      <span id="chopper-scale-val">0.65</span>
       <input type="number" class="cam-max hidden" id="chopper-scale-max" value="5" step="1">
     </div>
   </div>
@@ -757,7 +757,7 @@ window.moveRangeDebug = { x: 200, y: 200, z: 200 };
 });
 
 // ── 直升機模型縮放（即時調整）────────────────────────────
-window.chopperDebug = { scale: 1.45 };
+window.chopperDebug = { scale: 0.65 };
 {
   const input = document.getElementById('chopper-scale');
   const val   = document.getElementById('chopper-scale-val');
@@ -797,7 +797,7 @@ window.arReticleRadiusDebug = { value: 0.15 };
 }
 
 // ── 直升機初始位置（即時調整，疊加在搖桿移動範圍之外）──────
-window.chopperPosDebug = { x: 0, y: 0.32, z: -3 };
+window.chopperPosDebug = { x: 0, y: -0.44, z: -3 };
 [
   ['chopper-x', 'x'],
   ['chopper-y', 'y'],
