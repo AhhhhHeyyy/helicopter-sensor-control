@@ -79,6 +79,18 @@
     padding: 56px 16px 16px;
   }
   #debug-panel.open { display: block; }
+  /* ── 快調面板：直升機前後/上下/縮放，永遠顯示，不用開「調整面板」才看得到 ── */
+  #quick-adjust {
+    position: fixed; top: 48px; left: 50%; transform: translateX(-50%); z-index: 600;
+    width: min(260px, 88vw);
+    background: rgba(15,15,15,0.88);
+    border: 1px solid #333; border-radius: 10px;
+    padding: 8px 12px;
+  }
+  .qa-row { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+  .qa-row label { width: 56px; flex-shrink: 0; color: #ccc; font-size: 0.75rem; }
+  .qa-row input[type="range"] { flex: 1; }
+  .qa-row span { width: 40px; text-align: right; color: #4dd9f0; flex-shrink: 0; font-size: 0.75rem; }
   .cam-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
   .cam-row label { width: 60px; color: #888; flex-shrink: 0; }
   .cam-row input[type="range"] { flex: 1; }
@@ -344,6 +356,28 @@
   <button id="orient-btn">切換橫式</button>
   <button id="debug-toggle">調整面板</button>
 
+  <!-- 直升機定位快調面板：前後/上下/縮放，不用點「調整面板」展開就能直接看到、直接調 -->
+  <div id="quick-adjust">
+    <div class="qa-row">
+      <label for="chopper-z">前後定位</label>
+      <input type="range" id="chopper-z" min="-30" max="30" step="0.1" value="-3">
+      <span id="chopper-z-val">-3</span>
+      <input type="number" class="cam-max hidden" id="chopper-z-max" value="30" step="1">
+    </div>
+    <div class="qa-row">
+      <label for="chopper-y">上下定位</label>
+      <input type="range" id="chopper-y" min="-20" max="20" step="0.01" value="0.32">
+      <span id="chopper-y-val">0.32</span>
+      <input type="number" class="cam-max hidden" id="chopper-y-max" value="20" step="1">
+    </div>
+    <div class="qa-row">
+      <label for="chopper-scale">縮放</label>
+      <input type="range" id="chopper-scale" min="0.1" max="5" step="0.05" value="1.45">
+      <span id="chopper-scale-val">1.45</span>
+      <input type="number" class="cam-max hidden" id="chopper-scale-max" value="5" step="1">
+    </div>
+  </div>
+
   <!-- 姿態引導遮罩：手機角度符合要求前持續顯示，符合後自動淡出 -->
   <div id="orient-guide">
     <div id="orient-hud">
@@ -468,12 +502,6 @@
         <input type="number" class="cam-max" id="range-z-max" value="200" step="1">
       </div>
       <div class="cam-row">
-        <label for="chopper-scale">飛機縮放</label>
-        <input type="range" id="chopper-scale" min="0.1" max="5" step="0.05" value="1.45">
-        <span id="chopper-scale-val">1.45</span>
-        <input type="number" class="cam-max" id="chopper-scale-max" value="5" step="1">
-      </div>
-      <div class="cam-row">
         <label for="ar-reticle-r">AR定位圈半徑</label>
         <input type="range" id="ar-reticle-r" min="0.02" max="0.6" step="0.01" value="0.15">
         <span id="ar-reticle-r-val">0.15</span>
@@ -484,18 +512,6 @@
         <input type="range" id="chopper-x" min="-20" max="20" step="0.1" value="0">
         <span id="chopper-x-val">0</span>
         <input type="number" class="cam-max" id="chopper-x-max" value="20" step="1">
-      </div>
-      <div class="cam-row">
-        <label for="chopper-y">飛機初始Y</label>
-        <input type="range" id="chopper-y" min="-20" max="20" step="0.1" value="0.32">
-        <span id="chopper-y-val">0.32</span>
-        <input type="number" class="cam-max" id="chopper-y-max" value="20" step="1">
-      </div>
-      <div class="cam-row">
-        <label for="chopper-z">飛機初始Z</label>
-        <input type="range" id="chopper-z" min="-30" max="30" step="0.1" value="-3">
-        <span id="chopper-z-val">-3</span>
-        <input type="number" class="cam-max" id="chopper-z-max" value="30" step="1">
       </div>
       <div class="cam-row">
         <label for="chopper-rot-x">機身旋轉X</label>
