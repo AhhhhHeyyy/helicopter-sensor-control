@@ -997,7 +997,11 @@ function resetOrientGuide() {
 function getStableRollDeg(isLandscapeNow) {
   const ax = isLandscapeNow ? -cs.accelData.y : cs.accelData.x;
   const ay = isLandscapeNow ?  cs.accelData.x : cs.accelData.y;
-  return Math.atan2(ax, -ay) * 180 / Math.PI;
+  // 手機直立、螢幕正對使用者、無左右歪斜時，重力加速度應落在 +ay（沿裝置頂端方向），
+  // ax≈0；此時要讀出 0°，須用 atan2(ax, ay)。先前誤用 atan2(ax, -ay)，沒有歪斜時基準值
+  // 會算成 ±180° 而非 0°，且該讀數正好落在 atan2 的角度不連續處（±180° 交界），
+  // 微小雜訊就會讓輸出在 +180°/-180° 間跳動——這正是橫線「不準」又「不穩定」的成因。
+  return Math.atan2(ax, ay) * 180 / Math.PI;
 }
 
 // 橫線垂直位置反映 β 誤差（框內中段區＝角度已對齊），橫線傾斜角度反映左右翻滾角誤差
