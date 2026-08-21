@@ -270,6 +270,9 @@
   @keyframes orient-arrow-up-pulse { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
   @keyframes orient-arrow-down-pulse { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(5px); } }
   #orient-guide.ok .orient-arrow { opacity: 0; }
+  /* 角度符合後不再需要調角度的軌道/水平儀，且畫面中央要留給地板定位圈點按，
+     整組 HUD（軌道＋箭頭）直接收起，只留最上方一小條文字提示，避免蓋住圈圈 */
+  #orient-guide.ok #orient-hud { display: none; }
   #orient-track { position: relative; width: min(150px, 50vw); height: min(30vh, 230px); }
   .orient-bracket {
     position: absolute; top: 0; bottom: 0; width: 3px;
@@ -1420,8 +1423,13 @@ const chopperVertLeashDebug = window.chopperVertLeashDebug;
 const chopperPitchRecoilDebug = window.chopperPitchRecoilDebug;
 const movePos = new THREE.Vector3(0, 0, 0); // 飛行範圍內的相對位置（不含初始位置偏移）
 
-const MAX_SPEED  = 1.0;  // 最大移動速度（單位／秒，搖桿水平移動用）
-const ACCEL      = 10;   // 推搖桿時的加速反應速度
+const MAX_SPEED  = 1.0;  // 最大移動速度（單位／秒，搖桿水平移動用；以下方 SPEED_SCALE_REF 對應的機身縮放為基準調校）
+const ACCEL      = 10;   // 推搖桿時的加速反應速度（時間常數，不隨機身縮放調整）
+// 上面這些移動速度常數是在「飛機縮放」偵錯滑桿預設值 1.2 下調校出來的手感；AR 模式會把
+// chopperDebug.scale 縮到 0.135（桌上玩具尺寸），如果移動速度不跟著等比例縮小，縮小後的機身
+// 相對自己的體型會飛得快非常多（同樣 1 單位/秒，體長縮小 9 倍等於相對體長的速度快了 9 倍）。
+// moveSpeedScale 把速度換算成跟機身目前實際縮放同比例，讓「每秒飛幾個機身長度」維持一致。
+const SPEED_SCALE_REF = 1.2; // 上面速度常數調校時對應的 chopperDebug.scale 基準值
 const DAMPING    = 3;    // 放開搖桿後的減速阻尼（越大停得越快）
 
 // 轉向用彈簧-阻尼（而非按比例直接逼近角度）：角速度從 0 開始逐漸加速轉起來，接近目標朝向
@@ -1582,7 +1590,25 @@ new GLTFLoader().load('low_poly_helicopter.glb', gltf => {
   obj.position.sub(center);
   chopperBasePos = obj.position.clone(); // 模型置中後的基準位置，旋轉中心偏移以此為基準
   chopperBaseScale = 2.6 / Math.max(size.x, size.y, size.z);
-  chopperFootprintUnit = Math.max(size.x, size.z) / 2; // X/Z 佔地半徑（模型原始單位）
+
+  // 佔地半徑不能直接用模型「原始未旋轉」座標的 X/Z 包圍盒：實際顯示時 chopper 群組會套用
+  // chopperRotDebug 這組掛載旋轉（預設 -168/-90/-168 度，幅度很大），模型在畫面上的姿態
+  // 跟原始檔案座標差很多，導致圈圈大小（用原始 X/Z 算）跟畫面上實際看到的機身佔地兜不起來。
+  // 改成把置中後包圍盒的 8 個角點套用同一組掛載旋轉，取旋轉後在水平面（XZ）離中心最遠的
+  // 距離，才是畫面上真正看得到的佔地半徑；之後的機頭朝向（yaw）只在水平面繞著轉，半徑不變。
+  const footprintQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+    THREE.MathUtils.degToRad(chopperRotDebug.x),
+    THREE.MathUtils.degToRad(chopperRotDebug.y),
+    THREE.MathUtils.degToRad(chopperRotDebug.z)
+  ));
+  const halfSize = size.clone().multiplyScalar(0.5);
+  let footprintRadius = 0;
+  const corner = new THREE.Vector3();
+  [-1, 1].forEach(sx => [-1, 1].forEach(sy => [-1, 1].forEach(sz => {
+    corner.set(sx * halfSize.x, sy * halfSize.y, sz * halfSize.z).applyQuaternion(footprintQuat);
+    footprintRadius = Math.max(footprintRadius, Math.hypot(corner.x, corner.z));
+  })));
+  chopperFootprintUnit = footprintRadius; // 掛載旋轉後的 X/Z 佔地半徑（模型原始單位）
   chopperModel = obj;
   obj.scale.setScalar(chopperBaseScale * chopperDebug.scale);
 
@@ -1693,17 +1719,23 @@ function animate() {
     // 搖桿是否有水平輸入（下面判斷「是否已開始手動操作」與「是否更新目標朝向」都會用到）
     const joyActive = (state.joyH * state.joyH + state.joyV * state.joyV) > 1e-4;
 
+    // 移動速度隨機身目前實際縮放等比例換算（見 SPEED_SCALE_REF 說明），維持「每秒飛幾個機身長度」的手感一致
+    const moveSpeedScale = chopperDebug.scale / SPEED_SCALE_REF;
+    const maxSpeed     = MAX_SPEED * moveSpeedScale;
+    const vertUpSpeed  = VERT_UP_SPEED * moveSpeedScale;
+    const vertFallSpeed = VERT_FALL_SPEED * moveSpeedScale;
+
     // 定位後、手動操作（搖桿或上升按鈕）開始之前，強制目標速度為 0，直升機黏在地面/桌面上不動，
     // 避免放置瞬間就因為預設的下沉目標速度而自己往下滑
     if (state.altUp || joyActive) hasStartedMoving = true;
-    const vertTarget = state.altUp ? VERT_UP_SPEED : ((window._holdAltitude || !hasStartedMoving) ? 0 : VERT_FALL_SPEED);
+    const vertTarget = state.altUp ? vertUpSpeed : ((window._holdAltitude || !hasStartedMoving) ? 0 : vertFallSpeed);
     const vertAccel  = state.altUp ? VERT_UP_ACCEL : VERT_FALL_ACCEL;
 
     // 搖桿輸入（H=左右、V=前後）先算出「目標朝向」與「油門大小」，還不是實際移動方向：
     // 飛機式操控下，搖桿決定機頭應該轉去哪、以及推進力道，實際飛行方向永遠沿目前機頭朝向
     targetVel.copy(flightRightXZ).multiplyScalar(state.joyH)
       .addScaledVector(flightForwardXZ, state.joyV)
-      .multiplyScalar(MAX_SPEED);
+      .multiplyScalar(maxSpeed);
     targetVel.y = vertTarget;
 
     // 更新目標朝向：只在搖桿有水平輸入時才更新，且只取水平分量（垂直的上升/下沉
@@ -1733,8 +1765,8 @@ function animate() {
     const headingErrAbs = Math.abs(headingYawDelta);
     const alignmentFactor = Math.max(0, Math.cos(headingErrAbs));
     const throttle = alignmentFactor * Math.min(1, Math.hypot(state.joyH, state.joyV));
-    targetVel.x = currentHeadingDir.x * throttle * MAX_SPEED;
-    targetVel.z = currentHeadingDir.z * throttle * MAX_SPEED;
+    targetVel.x = currentHeadingDir.x * throttle * maxSpeed;
+    targetVel.z = currentHeadingDir.z * throttle * maxSpeed;
 
     velocity.x = approachValue(velocity.x, targetVel.x, delta);
     velocity.y += (targetVel.y - velocity.y) * Math.min(1, vertAccel * delta);
@@ -1776,7 +1808,7 @@ function animate() {
     // 實際飛行速度」縮放，而非單純依朝向本身：純轉向、還沒真的出發時速度是 0，箭頭就落在
     // corePos 上不偏移，旋轉中心（機頭）維持不動；等機身真的開始飛才會前移。避免朝向轉動
     // 本身就把箭頭（進而把機身）沿著圓周拖著跑，違背「圓心固定、先轉好再出發」的效果。
-    const speedRatio = Math.min(1, Math.hypot(velocity.x, velocity.z) / MAX_SPEED);
+    const speedRatio = Math.min(1, Math.hypot(velocity.x, velocity.z) / maxSpeed);
     arrowPos.copy(corePos).addScaledVector(currentHeadingDir, chopperArrowOffsetDebug.value * speedRatio);
     headingArrow.position.copy(arrowPos);
 
