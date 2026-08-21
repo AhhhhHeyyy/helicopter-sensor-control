@@ -1414,6 +1414,30 @@ placementMarker.visible = false;
 placementMarker.scale.setScalar(RETICLE_DEFAULT_RADIUS);
 scene.add(placementMarker);
 
+// 偵測平面視覺參考：半透明填色平面＋網格線，純粹讓使用者更容易判斷偵測到的是哪個平面
+// （多大概略範圍、朝哪個方向），不是 hit-test 真正回傳的平面邊界——8th Wall SLAM 的
+// hitTest 只給單點命中結果＋法向量，沒有平面幾何/邊界資料，所以尺寸是固定倍率的示意值
+const RETICLE_PLANE_MULTIPLIER = 4; // 平面／網格參考範圍 = reticle 外半徑 × 這個倍數
+const reticlePlaneFillMat = new THREE.MeshBasicMaterial({
+  color: 0xffaa00, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false,
+});
+const reticlePlaneFill = new THREE.Mesh(
+  new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+  reticlePlaneFillMat
+);
+// GridHelper 預設用頂點色畫出中心線／格線兩種顏色，關掉 vertexColors 改用 material.color，
+// 才能跟 reticle 一樣依穩定度即時切換整體顏色（橘→綠）
+const reticleGridHelper = new THREE.GridHelper(1, 12, 0xffaa00, 0xffaa00);
+reticleGridHelper.material.vertexColors = false;
+reticleGridHelper.material.transparent = true;
+reticleGridHelper.material.opacity = 0.35;
+reticleGridHelper.material.depthWrite = false;
+
+const reticlePlane = new THREE.Group();
+reticlePlane.add(reticlePlaneFill, reticleGridHelper);
+reticlePlane.visible = false;
+scene.add(reticlePlane);
+
 // 地板偵測穩定度判斷：hit-test 結果距離越遠雜訊越大，單幀結果可能忽高忽低，
 // 需連續多幀的偵測結果都落在容許誤差內（且用平滑後的位置）才允許放置，避免飛機懸空或陷地
 // 綠/黃兩色改用「進入」跟「離開」兩套不同門檻（類似施密特觸發器）：要變綠比較嚴格，
@@ -1426,6 +1450,9 @@ const RETICLE_UNSTABLE_GRACE    = 6;    // 已穩定時，需連續這麼多幀�
 const RETICLE_SMOOTH_ALPHA  = 0.25; // 平滑係數（越小越平滑但反應越慢）
 const reticleHistory = [];
 const reticleSmoothed = new THREE.Vector3();
+// 表面角度（貼合實際偵測到的傾斜方向，例如桌緣、斜面），沒有 rotation 資料時維持單位四元數
+// （對應 reticle/reticlePlane 幾何原本 rotateX(-90°) 烘焙的水平朝向，向下相容舊行為）
+const reticleSmoothedQuat = new THREE.Quaternion();
 let reticleStable = false;
 let reticleHasSample = false;
 let reticleUnstableStreak = 0;
@@ -1681,6 +1708,7 @@ function updateReticleFootprint() {
     : RETICLE_DEFAULT_RADIUS;
   reticle.scale.setScalar(window._xrActive ? window.arReticleRadiusDebug.value : modelR);
   placementMarker.scale.setScalar(modelR);
+  reticlePlane.scale.setScalar(reticle.scale.x * RETICLE_PLANE_MULTIPLIER);
 }
 
 const clock = new THREE.Clock();
@@ -1955,14 +1983,21 @@ const _startXR = () => {
         const _ch = XR8.XrController.hitTest(0.5, 0.5, { DETECTED_SURFACE: true });
         if (_ch && _ch.length > 0) {
           const hp = _ch[0].position;
+          const hr = _ch[0].rotation; // 命中表面法向量對應的四元數，貼平面/桌緣等非水平表面時會跟著傾斜
           if (!reticleHasSample) {
             reticleSmoothed.set(hp.x, hp.y, hp.z); // 第一筆樣本直接對齊，避免從原點平滑過來
+            if (hr) reticleSmoothedQuat.set(hr.x, hr.y, hr.z, hr.w);
             reticleHasSample = true;
           } else {
             reticleSmoothed.lerp(new THREE.Vector3(hp.x, hp.y, hp.z), RETICLE_SMOOTH_ALPHA);
+            if (hr) reticleSmoothedQuat.slerp(new THREE.Quaternion(hr.x, hr.y, hr.z, hr.w), RETICLE_SMOOTH_ALPHA);
           }
           reticle.position.copy(reticleSmoothed);
+          reticle.quaternion.copy(reticleSmoothedQuat);
           reticle.visible = true;
+          reticlePlane.position.copy(reticleSmoothed);
+          reticlePlane.quaternion.copy(reticleSmoothedQuat);
+          reticlePlane.visible = true;
 
           // 遠距離時單眼 SLAM 的深度估計雜訊較大，需連續 N 幀的偵測結果都落在容許誤差內
           // 才視為穩定，避免瞬間雜訊造成放置高度偏差（懸空／陷地）；改用平滑後的位置
@@ -1989,8 +2024,11 @@ const _startXR = () => {
             reticleUnstableStreak = 0;
           }
           reticleMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
+          reticlePlaneFillMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
+          reticleGridHelper.material.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
         } else {
           reticle.visible = false;
+          reticlePlane.visible = false;
           resetReticleStability();
         }
       }
@@ -2024,6 +2062,7 @@ const _startXR = () => {
       chopperShouldBeVisible = true;
       applyChopperVisibility();
       reticle.visible = false;
+      reticlePlane.visible = false;
       // 放置成功震動確認（僅 Android Chrome 支援，iOS Safari 無此 API 時靜默略過）
       if ('vibrate' in navigator) navigator.vibrate([15, 30, 15, 30, 80]);
     }
