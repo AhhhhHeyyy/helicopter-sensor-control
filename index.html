@@ -988,9 +988,22 @@ function resetOrientGuide() {
   orientArrowDownEl.classList.remove('active');
 }
 
-// 橫線垂直位置反映 β 誤差（框內中段區＝角度已對齊），橫線傾斜角度反映 γ 誤差（像水平儀）；
-// 兩者皆在容許範圍內才判定 ok，此時框線與橫線轉綠、文字改為下一步指示（對準地板放置），
-// 但遮罩本身持續顯示，只是解除點擊阻擋（.clickthrough）讓點按能穿透去放置直升機。
+// 手機接近垂直（β≈90°）時，deviceorientation 的 alpha/gamma 會進入萬向鎖：極小的實際
+// 轉動就會讓 gamma 讀值劇烈跳動，導致橫線傾斜角看起來很不穩定（原理性限制，不是手抖）。
+// 改用重力加速度（devicemotion 的 accelerationIncludingGravity，見 cs.accelData）算左右
+// 翻滾角，這個量不經過 alpha/beta/gamma 分解，沒有萬向鎖問題。
+// 注意：X/Y 軸對應方向以直式手持為準推導，橫式的座標對調是比照現有 effBeta/effGamma
+// 的橫式互換邏輯類推，尚未在實機的橫式模式下驗證過方向是否正確。
+function getStableRollDeg(isLandscapeNow) {
+  const ax = isLandscapeNow ? -cs.accelData.y : cs.accelData.x;
+  const ay = isLandscapeNow ?  cs.accelData.x : cs.accelData.y;
+  return Math.atan2(ax, -ay) * 180 / Math.PI;
+}
+
+// 橫線垂直位置反映 β 誤差（框內中段區＝角度已對齊），橫線傾斜角度反映左右翻滾角誤差
+// （像水平儀，來源見上方 getStableRollDeg）；兩者皆在容許範圍內才判定 ok，此時框線與
+// 橫線轉綠、文字改為下一步指示（對準地板放置），但遮罩本身持續顯示，只是解除點擊阻擋
+// （.clickthrough）讓點按能穿透去放置直升機。
 function updateOrientGuide() {
   if (window.arPlaced) {
     window.orientGuideOk = false;
@@ -1001,7 +1014,7 @@ function updateOrientGuide() {
 
   const isLandscapeNow = document.body.classList.contains('landscape');
   const effBeta  = isLandscapeNow ? -cs.orientData.gamma : cs.orientData.beta;
-  const effGamma = isLandscapeNow ?  cs.orientData.beta  : cs.orientData.gamma;
+  const effGamma = getStableRollDeg(isLandscapeNow);
   const betaErr  = effBeta - 90; // 目標：垂直朝上
   const gammaErr = effGamma;      // 目標：不左右歪斜
 
@@ -1842,8 +1855,11 @@ function animate() {
 const _startXR = () => {
   window._xrActive = true;
   document.getElementById('camera-bg').style.display = 'none';
-  // AR 模式縮小直升機
-  window.chopperDebug.scale = 0.7;
+  // AR 模式縮小直升機：目標機身長（模型最長邊）落在真實世界約 35 公分左右，抓桌上玩具尺寸感；
+  // 模型最長邊已由 chopperBaseScale 正規化成 2.6 個世界單位，AR 世界單位＝實際公尺數，
+  // 所以縮放倍率 = 目標長度(公尺) / 2.6，地板定位圈（見 updateReticleFootprint）會跟著同步縮放
+  window.chopperDebug.scale = 0.135; // 2.6 * 0.135 ≈ 0.35m
+
   // 「請對準地板，點按螢幕放置」的提示已併入姿態引導遮罩的文字（見 updateOrientGuide），
   // 角度符合後會自動切換顯示，不再另外疊加一個獨立的提示泡泡
 
