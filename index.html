@@ -91,6 +91,12 @@
   .qa-row label { width: 56px; flex-shrink: 0; color: #ccc; font-size: 0.75rem; }
   .qa-row input[type="range"] { flex: 1; }
   .qa-row span { width: 40px; text-align: right; color: #4dd9f0; flex-shrink: 0; font-size: 0.75rem; }
+  #chopper-scale-save {
+    flex: 1; padding: 7px 0; border-radius: 8px; border: 1px solid #444;
+    background: rgba(77,217,240,0.12); color: #4dd9f0; font-size: 0.75rem; cursor: pointer;
+  }
+  #chopper-scale-save:active { opacity: 0.7; }
+  #chopper-scale-save-status { width: auto; text-align: left; font-size: 0.7rem; color: #888; }
   .cam-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
   .cam-row label { width: 60px; color: #888; flex-shrink: 0; }
   .cam-row input[type="range"] { flex: 1; }
@@ -375,6 +381,11 @@
       <input type="range" id="chopper-scale" min="0.1" max="5" step="0.05" value="1.25">
       <span id="chopper-scale-val">1.25</span>
       <input type="number" class="cam-max hidden" id="chopper-scale-max" value="5" step="1">
+    </div>
+    <div class="qa-row">
+      <label></label>
+      <button type="button" id="chopper-scale-save">儲存目前縮放為預設</button>
+      <span id="chopper-scale-save-status"></span>
     </div>
   </div>
 
@@ -756,6 +767,25 @@ window.moveRangeDebug = { x: 200, y: 200, z: 200 };
   });
 });
 
+// ── AR 校準值本地儲存（縮放與定位圈比例）───────────────────
+// 使用者在實機上把「縮放」調到滿意的大小後，可按「儲存目前縮放為預設」直接寫入
+// localStorage：下次同一台裝置/瀏覽器打開，AR 一開始就會套用這個校準過的縮放與比例，
+// 不用每次重新調整，也不用把數字報回來改原始碼。
+const AR_CALIBRATION_KEY = 'chopperArCalibration';
+function loadArCalibration() {
+  try {
+    const raw = localStorage.getItem(AR_CALIBRATION_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (typeof obj.scale === 'number' && obj.scale > 0 && typeof obj.ratio === 'number' && obj.ratio > 0) return obj;
+  } catch (e) {}
+  return null;
+}
+const savedArCalibration = loadArCalibration();
+// AR 模式進場時直升機縮放的預設值：有已儲存的校準值就用它，否則沿用原本手測出來的 0.135
+// （2.6 * 0.135 ≈ 0.35m，桌上玩具尺寸感，見 _startXR）
+window.AR_DEFAULT_SCALE = savedArCalibration ? savedArCalibration.scale : 0.135;
+
 // ── 直升機模型縮放（即時調整）────────────────────────────
 window.chopperDebug = { scale: 1.25 };
 {
@@ -780,6 +810,35 @@ window.chopperDebug = { scale: 1.25 };
     if (!isFinite(m) || m <= 0) return;
     input.max = m;
   });
+
+  // 「儲存目前縮放為預設」：用放置那一刻的定位圈半徑（window.lastPlacedReticleRadius，
+  // 見 touchend 放置流程）與目前縮放值反推出兩者該有的比例，一起存進 localStorage。
+  // 之所以反推比例而不是只存縮放值，是因為定位圈半徑＝縮放×比例，只改縮放的話兩者會
+  // 一起等比例變大變小、視覺落差永遠不會消失，必須連同比例一起校準才能真正對齊。
+  const saveBtn = document.getElementById('chopper-scale-save');
+  const saveStatus = document.getElementById('chopper-scale-save-status');
+  saveBtn.addEventListener('click', () => {
+    if (!window.lastPlacedReticleRadius) {
+      saveStatus.textContent = '請先在 AR 中放置一次直升機';
+      return;
+    }
+    const scale = window.chopperDebug.scale;
+    const ratio = window.lastPlacedReticleRadius / scale;
+    try {
+      localStorage.setItem(AR_CALIBRATION_KEY, JSON.stringify({ scale, ratio }));
+      saveStatus.textContent = '已儲存！下次進 AR 自動套用';
+    } catch (e) {
+      saveStatus.textContent = '儲存失敗';
+      return;
+    }
+    if (window.arReticleRadiusDebug) {
+      window.arReticleRadiusDebug.ratio = ratio;
+      const ratioInput = document.getElementById('ar-reticle-r');
+      const ratioVal = document.getElementById('ar-reticle-r-val');
+      ratioInput.value = ratio.toFixed(2);
+      ratioVal.textContent = ratioInput.value;
+    }
+  });
 }
 
 // ── AR 定位圈半徑（隨機身縮放等比例連動）────────────────────
@@ -787,8 +846,8 @@ window.chopperDebug = { scale: 1.25 };
 // 這樣拖動「縮放」滑桿時圈圈會跟著等比例放大縮小，不用兩邊分開對。比例常數本身仍可在
 // 偵錯面板微調，因為模型包圍盒推算出來的佔地半徑跟實機看到的視覺大小對不太起來
 // （模型本身形狀不規則、包圍盒本來就只是粗略估計）。
-// 預設值依實測校準：chopperDebug.scale 被 _startXR 覆寫成 0.135 時，圈圈半徑 0.15m 最貼合。
-const RETICLE_RADIUS_RATIO_DEFAULT = 0.15 / 0.135;
+// 預設值：有已儲存的校準值就用它，否則沿用原本手測出來的 0.15m／0.135 縮放這組數字。
+const RETICLE_RADIUS_RATIO_DEFAULT = savedArCalibration ? savedArCalibration.ratio : 0.15 / 0.135;
 window.arReticleRadiusDebug = { ratio: RETICLE_RADIUS_RATIO_DEFAULT };
 {
   const input = document.getElementById('ar-reticle-r');
@@ -1990,12 +2049,13 @@ function animate() {
 const _startXR = () => {
   window._xrActive = true;
   document.getElementById('camera-bg').style.display = 'none';
-  // AR 模式縮小直升機：目標機身長（模型最長邊）落在真實世界約 35 公分左右，抓桌上玩具尺寸感；
-  // 模型最長邊已由 chopperBaseScale 正規化成 2.6 個世界單位，AR 世界單位＝實際公尺數，
-  // 所以縮放倍率 = 目標長度(公尺) / 2.6，地板定位圈（見 updateReticleFootprint）會跟著等比例縮放。
+  // AR 模式縮小直升機：預設落在真實世界約 35 公分左右的桌上玩具尺寸感（若使用者用「儲存
+  // 目前縮放為預設」校準過，這裡改用 window.AR_DEFAULT_SCALE 讀到的已儲存值，見上方
+  // loadArCalibration）。模型最長邊已由 chopperBaseScale 正規化成 2.6 個世界單位，AR 世界
+  // 單位＝實際公尺數，地板定位圈（見 updateReticleFootprint）會跟著等比例縮放。
   // 用 setChopperScale 而不是直接寫 window.chopperDebug.scale，讓常駐面板的「縮放」滑桿
   // 顯示值同步更新，不會出現滑桿畫面停在舊數字、但實際套用的是這裡蓋掉的新值的情況。
-  window.setChopperScale(0.135); // 2.6 * 0.135 ≈ 0.35m
+  window.setChopperScale(window.AR_DEFAULT_SCALE); // 未校準時 2.6 * 0.135 ≈ 0.35m
 
   // 「請對準地板，點按螢幕放置」的提示已併入姿態引導遮罩的文字（見 updateOrientGuide），
   // 角度符合後會自動切換顯示，不再另外疊加一個獨立的提示泡泡
@@ -2096,6 +2156,8 @@ const _startXR = () => {
       window.arPlaced = true;
       chopperShouldBeVisible = true;
       applyChopperVisibility();
+      // 記錄放置那一刻的定位圈實際半徑，供「儲存目前縮放為預設」反推縮放／定位圈比例用
+      window.lastPlacedReticleRadius = reticle.scale.x;
       reticle.visible = false;
       reticlePlane.visible = false;
       // 放置成功震動確認（僅 Android Chrome 支援，iOS Safari 無此 API 時靜默略過）
