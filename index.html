@@ -1416,18 +1416,25 @@ scene.add(placementMarker);
 
 // 地板偵測穩定度判斷：hit-test 結果距離越遠雜訊越大，單幀結果可能忽高忽低，
 // 需連續多幀的偵測結果都落在容許誤差內（且用平滑後的位置）才允許放置，避免飛機懸空或陷地
-const RETICLE_STABLE_FRAMES = 12; // 需連續穩定的幀數
-const RETICLE_STABLE_TOL    = 0.02; // 容許誤差（公尺）
+// 綠/黃兩色改用「進入」跟「離開」兩套不同門檻（類似施密特觸發器）：要變綠比較嚴格，
+// 但一旦變綠、除非明顯超出更寬鬆的門檻且連續很多幀，否則不會馬上跳回黃色，避免卡在
+// 邊緣時來回橫跳、來不及在綠色的瞬間點下去
+const RETICLE_STABLE_FRAMES     = 12;   // 需連續納入判斷的幀數
+const RETICLE_STABLE_TOL        = 0.02; // 進入穩定（變綠）的容許誤差（公尺）
+const RETICLE_STABLE_TOL_EXIT   = 0.045; // 已穩定時，要超過這個更寬鬆的誤差才算「可能不穩定」
+const RETICLE_UNSTABLE_GRACE    = 6;    // 已穩定時，需連續這麼多幀都超過寬鬆誤差，才真的跳回不穩定
 const RETICLE_SMOOTH_ALPHA  = 0.25; // 平滑係數（越小越平滑但反應越慢）
 const reticleHistory = [];
 const reticleSmoothed = new THREE.Vector3();
 let reticleStable = false;
 let reticleHasSample = false;
+let reticleUnstableStreak = 0;
 
 function resetReticleStability() {
   reticleHistory.length = 0;
   reticleStable = false;
   reticleHasSample = false;
+  reticleUnstableStreak = 0;
 }
 
 // 搖桿可移動的範圍（世界座標單位）
@@ -1957,9 +1964,10 @@ const _startXR = () => {
           reticle.position.copy(reticleSmoothed);
           reticle.visible = true;
 
-          // 遠距離時單眼 SLAM 的深度估計雜訊較大，需連續 N 幀的原始偵測結果都
-          // 落在容許誤差內才視為穩定，避免瞬間雜訊造成放置高度偏差（懸空／陷地）
-          reticleHistory.push(new THREE.Vector3(hp.x, hp.y, hp.z));
+          // 遠距離時單眼 SLAM 的深度估計雜訊較大，需連續 N 幀的偵測結果都落在容許誤差內
+          // 才視為穩定，避免瞬間雜訊造成放置高度偏差（懸空／陷地）；改用平滑後的位置
+          // （reticleSmoothed）取樣，比直接用單幀原始 hp 雜訊小很多，變綠後也比較不會抖動
+          reticleHistory.push(reticleSmoothed.clone());
           if (reticleHistory.length > RETICLE_STABLE_FRAMES) reticleHistory.shift();
           if (reticleHistory.length === RETICLE_STABLE_FRAMES) {
             const avg = new THREE.Vector3();
@@ -1967,9 +1975,18 @@ const _startXR = () => {
             avg.multiplyScalar(1 / reticleHistory.length);
             let maxDev = 0;
             reticleHistory.forEach(v => { maxDev = Math.max(maxDev, v.distanceTo(avg)); });
-            reticleStable = maxDev < RETICLE_STABLE_TOL;
+            if (!reticleStable) {
+              reticleStable = maxDev < RETICLE_STABLE_TOL;
+              reticleUnstableStreak = 0;
+            } else if (maxDev < RETICLE_STABLE_TOL_EXIT) {
+              reticleUnstableStreak = 0;
+            } else if (++reticleUnstableStreak >= RETICLE_UNSTABLE_GRACE) {
+              reticleStable = false;
+              reticleUnstableStreak = 0;
+            }
           } else {
             reticleStable = false;
+            reticleUnstableStreak = 0;
           }
           reticleMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
         } else {
