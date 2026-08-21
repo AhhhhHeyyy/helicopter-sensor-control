@@ -474,6 +474,12 @@
         <input type="number" class="cam-max" id="chopper-scale-max" value="5" step="1">
       </div>
       <div class="cam-row">
+        <label for="ar-reticle-r">AR定位圈半徑</label>
+        <input type="range" id="ar-reticle-r" min="0.02" max="0.6" step="0.01" value="0.15">
+        <span id="ar-reticle-r-val">0.15</span>
+        <input type="number" class="cam-max" id="ar-reticle-r-max" value="0.6" step="0.1">
+      </div>
+      <div class="cam-row">
         <label for="chopper-x">飛機初始X</label>
         <input type="range" id="chopper-x" min="-20" max="20" step="0.1" value="0">
         <span id="chopper-x-val">0</span>
@@ -743,6 +749,27 @@ window.chopperDebug = { scale: 1.2 };
 
   input.addEventListener('input', () => {
     window.chopperDebug.scale = parseFloat(input.value);
+    val.textContent = input.value;
+  });
+
+  maxIn.addEventListener('change', () => {
+    const m = parseFloat(maxIn.value);
+    if (!isFinite(m) || m <= 0) return;
+    input.max = m;
+  });
+}
+
+// ── AR 定位圈半徑（公尺，即時調整）────────────────────────
+// 模型包圍盒推算出來的佔地半徑跟實機看到的視覺大小對不太起來（模型本身形狀不規則、
+// 包圍盒本來就只是粗略估計），改成直接給一個可以邊測邊調的固定半徑更準也更好調
+window.arReticleRadiusDebug = { value: 0.15 };
+{
+  const input = document.getElementById('ar-reticle-r');
+  const val   = document.getElementById('ar-reticle-r-val');
+  const maxIn = document.getElementById('ar-reticle-r-max');
+
+  input.addEventListener('input', () => {
+    window.arReticleRadiusDebug.value = parseFloat(input.value);
     val.textContent = input.value;
   });
 
@@ -1602,13 +1629,16 @@ new GLTFLoader().load('low_poly_helicopter.glb', gltf => {
     THREE.MathUtils.degToRad(chopperRotDebug.z)
   ));
   const halfSize = size.clone().multiplyScalar(0.5);
-  let footprintRadius = 0;
+  let maxAbsX = 0, maxAbsZ = 0;
   const corner = new THREE.Vector3();
   [-1, 1].forEach(sx => [-1, 1].forEach(sy => [-1, 1].forEach(sz => {
     corner.set(sx * halfSize.x, sy * halfSize.y, sz * halfSize.z).applyQuaternion(footprintQuat);
-    footprintRadius = Math.max(footprintRadius, Math.hypot(corner.x, corner.z));
+    maxAbsX = Math.max(maxAbsX, Math.abs(corner.x));
+    maxAbsZ = Math.max(maxAbsZ, Math.abs(corner.z));
   })));
-  chopperFootprintUnit = footprintRadius; // 掛載旋轉後的 X/Z 佔地半徑（模型原始單位）
+  // 用個別軸向的最大延伸（而非對角線距離）取較大者，對應原本「max(size.x,size.z)/2」的
+  // 單軸半徑定義，避免用對角線距離導致算出來的半徑比實際單軸延伸大一圈
+  chopperFootprintUnit = Math.max(maxAbsX, maxAbsZ); // 掛載旋轉後的 X/Z 佔地半徑（模型原始單位）
   chopperModel = obj;
   obj.scale.setScalar(chopperBaseScale * chopperDebug.scale);
 
@@ -1634,15 +1664,16 @@ function resize() {
 new ResizeObserver(resize).observe(wrap);
 resize();
 
-// 讓地板定位圈（AR 的 reticle／桌機測試用的 placementMarker）跟著直升機目前實際
-// 縮放大小走：footprint 半徑 = 模型原始半徑 × 基礎縮放 × 偵錯面板的縮放滑桿，
-// 三者跟 chopperModel.scale 每幀套用的倍率完全一致，圈圈多大直升機放下去就多大
+// AR 模式（reticle）直接用偵錯面板可調的固定半徑（公尺，window.arReticleRadiusDebug），
+// 不再從模型包圍盒推算：包圍盒只是粗略估計，模型形狀不規則（例如旋翼／機尾伸出去的部分）
+// 時跟實機看到的視覺大小會兜不起來，改成直接給一個能邊測邊調的固定值更準也更好調。
+// 桌機測試用的 placementMarker 沒有實機大小可以比對，繼續沿用模型包圍盒推算的舊邏輯即可。
 function updateReticleFootprint() {
-  const r = chopperFootprintUnit > 0
+  const modelR = chopperFootprintUnit > 0
     ? chopperFootprintUnit * chopperBaseScale * chopperDebug.scale
     : RETICLE_DEFAULT_RADIUS;
-  reticle.scale.setScalar(r);
-  placementMarker.scale.setScalar(r);
+  reticle.scale.setScalar(window._xrActive ? window.arReticleRadiusDebug.value : modelR);
+  placementMarker.scale.setScalar(modelR);
 }
 
 const clock = new THREE.Clock();
