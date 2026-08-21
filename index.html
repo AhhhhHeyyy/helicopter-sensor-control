@@ -1443,10 +1443,13 @@ scene.add(reticlePlane);
 // 綠/黃兩色改用「進入」跟「離開」兩套不同門檻（類似施密特觸發器）：要變綠比較嚴格，
 // 但一旦變綠、除非明顯超出更寬鬆的門檻且連續很多幀，否則不會馬上跳回黃色，避免卡在
 // 邊緣時來回橫跳、來不及在綠色的瞬間點下去
-const RETICLE_STABLE_FRAMES     = 12;   // 需連續納入判斷的幀數
-const RETICLE_STABLE_TOL        = 0.02; // 進入穩定（變綠）的容許誤差（公尺）
-const RETICLE_STABLE_TOL_EXIT   = 0.045; // 已穩定時，要超過這個更寬鬆的誤差才算「可能不穩定」
-const RETICLE_UNSTABLE_GRACE    = 6;    // 已穩定時，需連續這麼多幀都超過寬鬆誤差，才真的跳回不穩定
+// hit-test 是對螢幕正中央打一條線找地板，手機稍微傾斜／手震都會讓瞄準點跟著移動，
+// 這是正常生理性手震的等級，不代表偵測失敗；門檻放寬到能容忍一般手持狀態下的晃動，
+// 讓變綠不再需要「完全靜止」才能達成，同時仍保留一定的穩定度要求避免放置位置亂飄
+const RETICLE_STABLE_FRAMES     = 8;    // 需連續納入判斷的幀數
+const RETICLE_STABLE_TOL        = 0.035; // 進入穩定（變綠）的容許誤差（公尺）
+const RETICLE_STABLE_TOL_EXIT   = 0.07;  // 已穩定時，要超過這個更寬鬆的誤差才算「可能不穩定」
+const RETICLE_UNSTABLE_GRACE    = 4;    // 已穩定時，需連續這麼多幀都超過寬鬆誤差，才真的跳回不穩定
 const RETICLE_SMOOTH_ALPHA  = 0.25; // 平滑係數（越小越平滑但反應越慢）
 const reticleHistory = [];
 const reticleSmoothed = new THREE.Vector3();
