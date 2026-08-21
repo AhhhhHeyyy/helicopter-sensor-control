@@ -244,26 +244,63 @@
     height: min(110px, calc(var(--joy-size) * 0.48));
     font-size: 1rem;
   }
-  /* ── 姿態引導遮罩：進入即時顯示後，需先將手機轉到正確角度才會自動隱藏 ── */
+  /* ── 姿態引導遮罩：不再全黑遮擋鏡頭畫面，改為半透明 HUD，透過移動中的橫線
+     引導使用者將手機轉到正確角度，符合後橫線與框線變綠並自動淡出 ── */
   #orient-guide {
     position: fixed; inset: 0; z-index: 500;
-    background: rgba(0,0,0,0.85);
-    display: flex; align-items: center; justify-content: center;
-    padding: 24px; opacity: 1; transition: opacity 0.35s ease;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; padding: 24px; opacity: 1; transition: opacity 0.35s ease;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.4), rgba(0,0,0,0) 24%, rgba(0,0,0,0) 76%, rgba(0,0,0,0.4));
   }
   #orient-guide.hidden-guide { opacity: 0; pointer-events: none; }
-  #orient-guide-inner { width: min(360px, 92vw); text-align: center; }
-  #orient-guide-inner img { width: 100%; border-radius: 14px; display: block; margin: 0 auto 20px; }
-  #orient-ring-wrap { position: relative; width: min(190px, 52vw); margin: 0 auto; }
-  #orient-ring { width: 100%; display: block; }
-  #orient-ring-track { stroke: #ef4444; transition: stroke 0.2s ease; }
-  #orient-ring-track.ok { stroke: #22c55e; }
-  #orient-ring-zone { fill: rgba(34,197,94,0.10); stroke: rgba(34,197,94,0.5); }
-  #orient-ring-dot { fill: #ef4444; transition: fill 0.2s ease; }
-  #orient-ring-dot.ok { fill: #22c55e; }
-  #orient-guide-label { margin-top: 12px; font-size: 0.88rem; color: #ddd; }
+  #orient-hud { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .orient-arrow {
+    width: 0; height: 0;
+    border-left: 9px solid transparent; border-right: 9px solid transparent;
+    opacity: 0.25; transition: opacity 0.2s ease;
+  }
+  #orient-arrow-up { border-bottom: 15px solid #22d3ee; }
+  #orient-arrow-down { border-top: 15px solid #22d3ee; }
+  .orient-arrow.active { opacity: 1; animation: orient-arrow-up-pulse 0.9s ease-in-out infinite; }
+  #orient-arrow-down.active { animation-name: orient-arrow-down-pulse; }
+  @keyframes orient-arrow-up-pulse { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+  @keyframes orient-arrow-down-pulse { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(5px); } }
+  #orient-guide.ok .orient-arrow { opacity: 0; }
+  #orient-track { position: relative; width: min(170px, 55vw); height: min(42vh, 320px); }
+  .orient-bracket {
+    position: absolute; top: 0; bottom: 0; width: 3px;
+    background: #38bdf8; box-shadow: 0 0 8px rgba(56,189,248,0.5);
+    transition: background 0.2s ease, box-shadow 0.2s ease;
+  }
+  .orient-bracket::before, .orient-bracket::after {
+    content: ''; position: absolute; width: 16px; height: 3px; background: inherit; box-shadow: inherit;
+  }
+  .orient-bracket::before { top: 0; }
+  .orient-bracket::after { bottom: 0; }
+  #orient-bracket-left { left: 0; }
+  #orient-bracket-left::before, #orient-bracket-left::after { left: 0; }
+  #orient-bracket-right { right: 0; }
+  #orient-bracket-right::before, #orient-bracket-right::after { right: 0; }
+  #orient-guide.ok .orient-bracket { background: #22c55e; box-shadow: 0 0 10px rgba(34,197,94,0.6); }
+  #orient-zone {
+    position: absolute; left: 0; right: 0; top: 50%; height: 26%; transform: translateY(-50%);
+    background: rgba(34,211,238,0.08);
+    border-top: 1px dashed rgba(34,211,238,0.4); border-bottom: 1px dashed rgba(34,211,238,0.4);
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  #orient-guide.ok #orient-zone { background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.55); }
+  #orient-line {
+    position: absolute; left: -14px; right: -14px; top: 50%; height: 4px; border-radius: 2px;
+    background: #22d3ee; box-shadow: 0 0 10px rgba(34,211,238,0.7);
+    transform: translateY(-50%);
+    transition: background 0.15s ease, box-shadow 0.15s ease, top 0.08s linear, transform 0.08s linear;
+  }
+  #orient-guide.ok #orient-line { background: #22c55e; box-shadow: 0 0 12px rgba(34,197,94,0.8); }
+  #orient-guide-label {
+    font-size: 0.88rem; color: #eee; text-align: center; text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+    background: rgba(0,0,0,0.35); padding: 6px 16px; border-radius: 999px;
+  }
   #orient-guide-label.ok { color: #4ade80; }
-  #orient-guide-readout { margin-top: 6px; font-size: 0.78rem; color: #888; font-variant-numeric: tabular-nums; }
   /* ── 防螢幕自動旋轉：手機旋回直式時，把橫式 UI 旋轉回來 ── */
   @media screen and (orientation: portrait) {
     body.landscape {
@@ -302,18 +339,17 @@
 
   <!-- 姿態引導遮罩：手機角度符合要求前持續顯示，符合後自動淡出 -->
   <div id="orient-guide">
-    <div id="orient-guide-inner">
-      <img src="orientation-guide.png" alt="請垂直拿手機並拍攝地面獲取最佳視角">
-      <div id="orient-ring-wrap">
-        <svg id="orient-ring" viewBox="0 0 200 200">
-          <circle id="orient-ring-track" cx="100" cy="100" r="90" fill="none" stroke-width="8"/>
-          <circle id="orient-ring-zone" cx="100" cy="100" r="36" stroke-width="2"/>
-          <circle id="orient-ring-dot" cx="100" cy="100" r="12"/>
-        </svg>
+    <div id="orient-hud">
+      <div id="orient-arrow-up" class="orient-arrow"></div>
+      <div id="orient-track">
+        <div id="orient-bracket-left" class="orient-bracket"></div>
+        <div id="orient-bracket-right" class="orient-bracket"></div>
+        <div id="orient-zone"></div>
+        <div id="orient-line"></div>
       </div>
-      <div id="orient-guide-label">請將手機轉成垂直、螢幕面向自己</div>
-      <div id="orient-guide-readout">β 0.0°　γ 0.0°</div>
+      <div id="orient-arrow-down" class="orient-arrow"></div>
     </div>
+    <div id="orient-guide-label">請將手機轉成垂直、螢幕面向自己</div>
   </div>
 
   <!-- 上半：顯示層 -->
@@ -438,8 +474,8 @@
       </div>
       <div class="cam-row">
         <label for="chopper-y">飛機初始Y</label>
-        <input type="range" id="chopper-y" min="-20" max="20" step="0.1" value="1">
-        <span id="chopper-y-val">1</span>
+        <input type="range" id="chopper-y" min="-20" max="20" step="0.1" value="0.3">
+        <span id="chopper-y-val">0.3</span>
         <input type="number" class="cam-max" id="chopper-y-max" value="20" step="1">
       </div>
       <div class="cam-row">
@@ -711,7 +747,7 @@ window.chopperDebug = { scale: 1.2 };
 }
 
 // ── 直升機初始位置（即時調整，疊加在搖桿移動範圍之外）──────
-window.chopperPosDebug = { x: 0, y: 1, z: 0 };
+window.chopperPosDebug = { x: 0, y: 0.3, z: 0 };
 [
   ['chopper-x', 'x'],
   ['chopper-y', 'y'],
@@ -921,25 +957,29 @@ function show(id) {
 // ── 姿態引導遮罩（角度不符合時持續顯示，符合後淡出；角度又偏掉則重新出現）───
 // 直升機放置後（window.arPlaced）就不再需要提示，固定隱藏。
 // window.orientGuideOk 提供給 AR 放置點按邏輯判斷「角度是否已符合」。
-const ORIENT_GUIDE_TOL   = 30; // 誤差容許範圍（度，β 與 γ 合併計算的向量誤差）
-const ORIENT_RING_R      = 90; // svg 圓環半徑
-const ORIENT_MAX_ERR_EDGE = 70; // 對應到圓環邊緣的誤差角度
+const ORIENT_GUIDE_TOL    = 30; // 誤差容許範圍（度，β 與 γ 合併計算的向量誤差）
+const ORIENT_MAX_ERR_EDGE = 70; // 對應到軌道上下邊緣的誤差角度
+const ORIENT_MAX_ROLL_DEG = 35; // 橫線最大傾斜角度（模擬水平儀，視覺效果用）
 window.orientGuideOk = false;
 const orientGuideEl     = document.getElementById('orient-guide');
 const orientGuideLabel  = document.getElementById('orient-guide-label');
-const orientGuideReadout = document.getElementById('orient-guide-readout');
-const orientRingTrack   = document.getElementById('orient-ring-track');
-const orientRingDot     = document.getElementById('orient-ring-dot');
+const orientLineEl      = document.getElementById('orient-line');
+const orientArrowUpEl   = document.getElementById('orient-arrow-up');
+const orientArrowDownEl = document.getElementById('orient-arrow-down');
 
 function resetOrientGuide() {
   window.orientGuideOk = false;
-  orientGuideEl.classList.remove('hidden-guide');
-  orientRingTrack.classList.remove('ok');
-  orientRingDot.classList.remove('ok');
+  orientGuideEl.classList.remove('hidden-guide', 'ok');
   orientGuideLabel.classList.remove('ok');
   orientGuideLabel.textContent = '請將手機轉成垂直、螢幕面向自己';
+  orientLineEl.style.top = '50%';
+  orientLineEl.style.transform = 'translateY(-50%)';
+  orientArrowUpEl.classList.remove('active');
+  orientArrowDownEl.classList.remove('active');
 }
 
+// 橫線垂直位置反映 β 誤差（框內中段區＝角度已對齊），橫線傾斜角度反映 γ 誤差（像水平儀）；
+// 兩者皆在容許範圍內才判定 ok，此時框線與橫線轉綠並淡出遮罩，露出下方鏡頭畫面。
 function updateOrientGuide() {
   if (window.arPlaced) {
     window.orientGuideOk = false;
@@ -953,22 +993,22 @@ function updateOrientGuide() {
   const betaErr  = effBeta - 90; // 目標：垂直朝上
   const gammaErr = effGamma;      // 目標：不左右歪斜
 
-  orientGuideReadout.textContent = `β ${effBeta.toFixed(1)}°　γ ${effGamma.toFixed(1)}°`;
-
-  const scale = ORIENT_RING_R / ORIENT_MAX_ERR_EDGE;
-  let dx = gammaErr * scale;
-  let dy = -betaErr * scale;
-  const dist = Math.hypot(dx, dy);
-  if (dist > ORIENT_RING_R) { dx = dx / dist * ORIENT_RING_R; dy = dy / dist * ORIENT_RING_R; }
-  orientRingDot.setAttribute('cx', 100 + dx);
-  orientRingDot.setAttribute('cy', 100 + dy);
+  const vRatio  = Math.max(-1, Math.min(1, betaErr / ORIENT_MAX_ERR_EDGE));
+  const topPct  = 50 - vRatio * 45; // 45% 對應軌道上下邊緣，留一點邊界
+  const rollDeg = Math.max(-ORIENT_MAX_ROLL_DEG, Math.min(ORIENT_MAX_ROLL_DEG, gammaErr));
+  orientLineEl.style.top = topPct + '%';
+  orientLineEl.style.transform = `translateY(-50%) rotate(${rollDeg}deg)`;
 
   const ok = Math.hypot(betaErr, gammaErr) <= ORIENT_GUIDE_TOL;
   window.orientGuideOk = ok;
-  orientRingTrack.classList.toggle('ok', ok);
-  orientRingDot.classList.toggle('ok', ok);
+  orientGuideEl.classList.toggle('ok', ok);
   orientGuideLabel.classList.toggle('ok', ok);
   orientGuideLabel.textContent = ok ? '角度符合，準備完成' : '請將手機轉成垂直、螢幕面向自己';
+
+  const offCenter = topPct - 50; // 正值：橫線偏下，需往上抬；負值：橫線偏上，需往下壓
+  orientArrowUpEl.classList.toggle('active', !ok && offCenter > 4);
+  orientArrowDownEl.classList.toggle('active', !ok && offCenter < -4);
+
   orientGuideEl.classList.toggle('hidden-guide', ok);
 }
 
@@ -1267,6 +1307,9 @@ scene.add(dirLight);
 let arAnchorPos = new THREE.Vector3(0, 0, 0);
 let arPlaced = false;
 window.arPlaced = false; // 同步給姿態引導遮罩讀取（不同 script 作用域）
+// 定位後是否已經開始手動操作（搖桿或上升按鈕）：在此之前直升機完全靜止黏在地面/桌面上，
+// 不會像正常飛行中放開上升按鈕那樣緩慢下沉，避免一放置就自己往下沉穿出地板
+let hasStartedMoving = false;
 
 const reticleMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, side: THREE.DoubleSide });
 const reticle = new THREE.Mesh(
@@ -1275,6 +1318,16 @@ const reticle = new THREE.Mesh(
 );
 reticle.visible = false;
 scene.add(reticle);
+
+// 桌機測試用「定位點」標記：沒有相機/AR 時，直接在地面畫一個綠色圈圈代表放置位置，
+// 直升機定高懸停在上方，不會像手機端那樣放開按鈕就緩慢下沉（見 window._holdAltitude）
+const placementMarkerMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
+const placementMarker = new THREE.Mesh(
+  new THREE.RingGeometry(0.55, 0.7, 48).rotateX(-Math.PI / 2),
+  placementMarkerMat
+);
+placementMarker.visible = false;
+scene.add(placementMarker);
 
 // 地板偵測穩定度判斷：hit-test 結果距離越遠雜訊越大，單幀結果可能忽高忽低，
 // 需連續多幀的偵測結果都落在容許誤差內（且用平滑後的位置）才允許放置，避免飛機懸空或陷地
@@ -1566,7 +1619,13 @@ function animate() {
 
     // 上下移動：按住「上升」按鈕才上升，放開後緩慢下沉（類似 Flappy Bird 的單鍵操作，
     // 但上升/下沉都用較慢的反應速度逼近目標速度，阻尼與施力的持續感更強）
-    const vertTarget = state.altUp ? VERT_UP_SPEED : VERT_FALL_SPEED;
+    // 搖桿是否有水平輸入（下面判斷「是否已開始手動操作」與「是否更新目標朝向」都會用到）
+    const joyActive = (state.joyH * state.joyH + state.joyV * state.joyV) > 1e-4;
+
+    // 定位後、手動操作（搖桿或上升按鈕）開始之前，強制目標速度為 0，直升機黏在地面/桌面上不動，
+    // 避免放置瞬間就因為預設的下沉目標速度而自己往下滑
+    if (state.altUp || joyActive) hasStartedMoving = true;
+    const vertTarget = state.altUp ? VERT_UP_SPEED : ((window._holdAltitude || !hasStartedMoving) ? 0 : VERT_FALL_SPEED);
     const vertAccel  = state.altUp ? VERT_UP_ACCEL : VERT_FALL_ACCEL;
 
     // 搖桿輸入（H=左右、V=前後）先算出「目標朝向」與「油門大小」，還不是實際移動方向：
@@ -1579,7 +1638,6 @@ function animate() {
     // 更新目標朝向：只在搖桿有水平輸入時才更新，且只取水平分量（垂直的上升/下沉
     // 完全不影響朝向，機身俯仰角改由下方的「上升傾角」獨立控制）；
     // 沒有水平輸入時維持上一次的目標朝向不變，機頭不會因放開搖桿而回正
-    const joyActive = (state.joyH * state.joyH + state.joyV * state.joyV) > 1e-4;
     const horizVelLengthSq = targetVel.x * targetVel.x + targetVel.z * targetVel.z;
     if (joyActive && horizVelLengthSq > 1e-6) {
       headingArrowDir.set(targetVel.x, 0, targetVel.z).normalize();
@@ -1615,7 +1673,9 @@ function animate() {
     const nextY = movePos.y + velocity.y * delta;
     const nextZ = movePos.z + velocity.z * delta;
     movePos.x = THREE.MathUtils.clamp(nextX, -moveRangeDebug.x, moveRangeDebug.x);
-    movePos.y = THREE.MathUtils.clamp(nextY, -moveRangeDebug.y, moveRangeDebug.y);
+    // 下限固定為 0（不可低於）：0 對應定位當下的地面/桌面高度（arAnchorPos.y），
+    // 避免下降時穿過原本定位的地面/桌面
+    movePos.y = THREE.MathUtils.clamp(nextY, 0, moveRangeDebug.y);
     movePos.z = THREE.MathUtils.clamp(nextZ, -moveRangeDebug.z, moveRangeDebug.z);
 
     // 撞到邊界時把朝牆壁方向的速度歸零，避免速度持續累積到 MAX_SPEED，
@@ -1630,6 +1690,16 @@ function animate() {
       arAnchorPos.y + movePos.y + chopperPosDebug.y,
       arAnchorPos.z + movePos.z + chopperPosDebug.z
     );
+
+    // 桌機測試的定位點標記：固定在「初始放置位置」的地面正下方（不隨搖桿移動），
+    // 代表 AR 模式下原本會點按放置的那個點；跟著「飛機初始 X/Z」滑桿即時調整
+    if (placementMarker.visible) {
+      placementMarker.position.set(
+        arAnchorPos.x + chopperPosDebug.x,
+        arAnchorPos.y + 0.02,
+        arAnchorPos.z + chopperPosDebug.z
+      );
+    }
 
     // 箭頭沿「目前機頭朝向」前移（由偵錯面板「箭頭前移量」滑桿即時調整），前移量依「目前
     // 實際飛行速度」縮放，而非單純依朝向本身：純轉向、還沒真的出發時速度是 0，箭頭就落在
@@ -1799,6 +1869,7 @@ const _startXR = () => {
       prevVelYPos = 0;
       pitchRecoilOffset = 0;
       pitchRecoilVel = 0;
+      hasStartedMoving = false;
       arPlaced = true;
       window.arPlaced = true;
       chopperShouldBeVisible = true;
@@ -1845,6 +1916,14 @@ if (window.XR8) {
       // 非 AR 模式沒有「點按放置」流程，直接顯示機身
       chopperShouldBeVisible = true;
       applyChopperVisibility();
+      // 桌機測試沒有相機/姿態感測器可用，姿態引導遮罩會因為角度永遠不符合而卡住畫面，
+      // 這裡直接視同「定位已完成」跳過引導，停在可操作的畫面上
+      window.arPlaced = true;
+      window.orientGuideOk = true;
+      document.getElementById('orient-guide').classList.add('hidden-guide');
+      // 顯示綠色定位點標記，並停用放開按鈕後的自動下沉（定高懸停在標記正上方）
+      window._holdAltitude = true;
+      placementMarker.visible = true;
       requestAnimationFrame(function _fallbackLoop() {
         animate();
         requestAnimationFrame(_fallbackLoop);
