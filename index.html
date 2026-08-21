@@ -244,15 +244,19 @@
     height: min(110px, calc(var(--joy-size) * 0.48));
     font-size: 1rem;
   }
-  /* ── 姿態引導遮罩：不再全黑遮擋鏡頭畫面，改為半透明 HUD，透過移動中的橫線
-     引導使用者將手機轉到正確角度，符合後橫線與框線變綠並自動淡出 ── */
+  /* ── 姿態引導遮罩：不再全黑遮擋鏡頭畫面，改為半透明 HUD，靠畫面上方顯示避免蓋住下方
+     搖桿操作區；符合角度後只變色，不會整個消失 ── 直到直升機真的放置成功才淡出。
+     符合角度後改用 .clickthrough（只解除點擊阻擋，不影響顯示）取代直接隱藏，避免
+     在門檻邊緣來回時整個遮罩閃現/消失 ── */
   #orient-guide {
     position: fixed; inset: 0; z-index: 500;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 16px; padding: 24px; opacity: 1; transition: opacity 0.35s ease;
-    background: linear-gradient(to bottom, rgba(0,0,0,0.4), rgba(0,0,0,0) 24%, rgba(0,0,0,0) 76%, rgba(0,0,0,0.4));
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+    gap: 14px; padding: 24px; padding-top: max(env(safe-area-inset-top, 0px), 14px);
+    opacity: 1; transition: opacity 0.35s ease;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.4), rgba(0,0,0,0) 30%);
   }
   #orient-guide.hidden-guide { opacity: 0; pointer-events: none; }
+  #orient-guide.clickthrough { pointer-events: none; }
   #orient-hud { display: flex; flex-direction: column; align-items: center; gap: 8px; }
   .orient-arrow {
     width: 0; height: 0;
@@ -266,7 +270,7 @@
   @keyframes orient-arrow-up-pulse { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
   @keyframes orient-arrow-down-pulse { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(5px); } }
   #orient-guide.ok .orient-arrow { opacity: 0; }
-  #orient-track { position: relative; width: min(170px, 55vw); height: min(42vh, 320px); }
+  #orient-track { position: relative; width: min(150px, 50vw); height: min(30vh, 230px); }
   .orient-bracket {
     position: absolute; top: 0; bottom: 0; width: 3px;
     background: #38bdf8; box-shadow: 0 0 8px rgba(56,189,248,0.5);
@@ -954,22 +958,28 @@ function show(id) {
     document.getElementById(s).classList.toggle('hidden', s !== id));
 }
 
-// ── 姿態引導遮罩（角度不符合時持續顯示，符合後淡出；角度又偏掉則重新出現）───
-// 直升機放置後（window.arPlaced）就不再需要提示，固定隱藏。
+// ── 姿態引導遮罩（從進入畫面持續顯示到直升機真正放置成功為止，角度符合時只變色，
+// 不會整個消失／重新出現，避免在門檻邊緣來回時閃爍）───
+// 直升機放置後（window.arPlaced）才淡出隱藏。
 // window.orientGuideOk 提供給 AR 放置點按邏輯判斷「角度是否已符合」。
 const ORIENT_GUIDE_TOL    = 30; // 誤差容許範圍（度，β 與 γ 合併計算的向量誤差）
 const ORIENT_MAX_ERR_EDGE = 70; // 對應到軌道上下邊緣的誤差角度
 const ORIENT_MAX_ROLL_DEG = 35; // 橫線最大傾斜角度（模擬水平儀，視覺效果用）
+const HAPTIC_TICK_MIN_MS  = 90;  // 角度接近符合時的最短震動間隔（越密集）
+const HAPTIC_TICK_MAX_MS  = 650; // 角度偏差很大時的最長震動間隔（越稀疏）
 window.orientGuideOk = false;
 const orientGuideEl     = document.getElementById('orient-guide');
 const orientGuideLabel  = document.getElementById('orient-guide-label');
 const orientLineEl      = document.getElementById('orient-line');
 const orientArrowUpEl   = document.getElementById('orient-arrow-up');
 const orientArrowDownEl = document.getElementById('orient-arrow-down');
+let orientGuideOkPrev = false; // 上一輪是否已對齊，用來偵測「剛對齊」的那一瞬間
+let lastHapticTick = 0;
 
 function resetOrientGuide() {
   window.orientGuideOk = false;
-  orientGuideEl.classList.remove('hidden-guide', 'ok');
+  orientGuideOkPrev = false;
+  orientGuideEl.classList.remove('hidden-guide', 'ok', 'clickthrough');
   orientGuideLabel.classList.remove('ok');
   orientGuideLabel.textContent = '請將手機轉成垂直、螢幕面向自己';
   orientLineEl.style.top = '50%';
@@ -979,13 +989,15 @@ function resetOrientGuide() {
 }
 
 // 橫線垂直位置反映 β 誤差（框內中段區＝角度已對齊），橫線傾斜角度反映 γ 誤差（像水平儀）；
-// 兩者皆在容許範圍內才判定 ok，此時框線與橫線轉綠並淡出遮罩，露出下方鏡頭畫面。
+// 兩者皆在容許範圍內才判定 ok，此時框線與橫線轉綠、文字改為下一步指示（對準地板放置），
+// 但遮罩本身持續顯示，只是解除點擊阻擋（.clickthrough）讓點按能穿透去放置直升機。
 function updateOrientGuide() {
   if (window.arPlaced) {
     window.orientGuideOk = false;
     orientGuideEl.classList.add('hidden-guide');
     return;
   }
+  orientGuideEl.classList.remove('hidden-guide'); // 長按重置放置後（arPlaced 重新變 false）讓遮罩自動重新出現
 
   const isLandscapeNow = document.body.classList.contains('landscape');
   const effBeta  = isLandscapeNow ? -cs.orientData.gamma : cs.orientData.beta;
@@ -999,17 +1011,36 @@ function updateOrientGuide() {
   orientLineEl.style.top = topPct + '%';
   orientLineEl.style.transform = `translateY(-50%) rotate(${rollDeg}deg)`;
 
-  const ok = Math.hypot(betaErr, gammaErr) <= ORIENT_GUIDE_TOL;
+  const errorMag = Math.hypot(betaErr, gammaErr);
+  const ok = errorMag <= ORIENT_GUIDE_TOL;
   window.orientGuideOk = ok;
   orientGuideEl.classList.toggle('ok', ok);
+  orientGuideEl.classList.toggle('clickthrough', ok);
   orientGuideLabel.classList.toggle('ok', ok);
-  orientGuideLabel.textContent = ok ? '角度符合，準備完成' : '請將手機轉成垂直、螢幕面向自己';
+  orientGuideLabel.textContent = ok
+    ? (window._xrActive ? '角度符合，請對準地板並點按螢幕放置' : '角度符合，準備完成')
+    : '請將手機轉成垂直、螢幕面向自己';
 
   const offCenter = topPct - 50; // 正值：橫線偏下，需往上抬；負值：橫線偏上，需往下壓
   orientArrowUpEl.classList.toggle('active', !ok && offCenter > 4);
   orientArrowDownEl.classList.toggle('active', !ok && offCenter < -4);
 
-  orientGuideEl.classList.toggle('hidden-guide', ok);
+  // 震動回饋：角度離符合越近震動越密集（類似轉盤/捲軸的碎震動），剛對齊瞬間給一次明顯雙震確認；
+  // 僅 Android Chrome 支援 navigator.vibrate，iOS Safari 沒有此 API 時整段直接跳過、不影響其他功能
+  if ('vibrate' in navigator) {
+    if (ok && !orientGuideOkPrev) {
+      navigator.vibrate([25, 40, 60]);
+    } else if (!ok) {
+      const now = Date.now();
+      const errRatio = Math.min(1, Math.max(0, (errorMag - ORIENT_GUIDE_TOL) / (ORIENT_MAX_ERR_EDGE - ORIENT_GUIDE_TOL)));
+      const tickInterval = HAPTIC_TICK_MIN_MS + errRatio * (HAPTIC_TICK_MAX_MS - HAPTIC_TICK_MIN_MS);
+      if (now - lastHapticTick >= tickInterval) {
+        navigator.vibrate(10);
+        lastHapticTick = now;
+      }
+    }
+  }
+  orientGuideOkPrev = ok;
 }
 
 // ── 開啟手機後置鏡頭，作為背景顯示 ──────────────────────────
@@ -1311,22 +1342,29 @@ window.arPlaced = false; // 同步給姿態引導遮罩讀取（不同 script �
 // 不會像正常飛行中放開上升按鈕那樣緩慢下沉，避免一放置就自己往下沉穿出地板
 let hasStartedMoving = false;
 
+// Ring 幾何體用「外半徑 1」的單位圓建立，實際外半徑由 reticle.scale／placementMarker.scale
+// 即時控制（見 updateReticleFootprint），讓圈圈大小能跟著直升機實際佔地大小走，
+// 不是寫死的固定半徑（見下方 chopperFootprintUnit 的說明）
+const RETICLE_DEFAULT_RADIUS = 0.12; // 模型尚未載入完成前的預設外半徑（公尺），每幀由 updateReticleFootprint() 覆寫
+
 const reticleMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, side: THREE.DoubleSide });
 const reticle = new THREE.Mesh(
-  new THREE.RingGeometry(0.08, 0.12, 32).rotateX(-Math.PI / 2),
+  new THREE.RingGeometry(0.667, 1, 32).rotateX(-Math.PI / 2),
   reticleMat
 );
 reticle.visible = false;
+reticle.scale.setScalar(RETICLE_DEFAULT_RADIUS);
 scene.add(reticle);
 
 // 桌機測試用「定位點」標記：沒有相機/AR 時，直接在地面畫一個綠色圈圈代表放置位置，
 // 直升機定高懸停在上方，不會像手機端那樣放開按鈕就緩慢下沉（見 window._holdAltitude）
 const placementMarkerMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
 const placementMarker = new THREE.Mesh(
-  new THREE.RingGeometry(0.55, 0.7, 48).rotateX(-Math.PI / 2),
+  new THREE.RingGeometry(0.786, 1, 48).rotateX(-Math.PI / 2),
   placementMarkerMat
 );
 placementMarker.visible = false;
+placementMarker.scale.setScalar(RETICLE_DEFAULT_RADIUS);
 scene.add(placementMarker);
 
 // 地板偵測穩定度判斷：hit-test 結果距離越遠雜訊越大，單幀結果可能忽高忽低，
@@ -1505,6 +1543,9 @@ new GLTFLoader().load('city-street_free_for_game.glb', gltf => {
 const chopperDebug = window.chopperDebug;
 let chopperModel = null, chopperBaseScale = 1;
 let chopperBasePos = null;
+// 直升機模型 X/Z 方向的「半徑」（模型原始單位，尚未套用 chopperBaseScale／縮放滑桿），
+// 用來讓地板定位圈即時換算成跟機身實際佔地大小一致的半徑（見 updateReticleFootprint）
+let chopperFootprintUnit = 0;
 
 let chopper = null;
 let mixer = null;
@@ -1524,6 +1565,7 @@ new GLTFLoader().load('low_poly_helicopter.glb', gltf => {
   obj.position.sub(center);
   chopperBasePos = obj.position.clone(); // 模型置中後的基準位置，旋轉中心偏移以此為基準
   chopperBaseScale = 2.6 / Math.max(size.x, size.y, size.z);
+  chopperFootprintUnit = Math.max(size.x, size.z) / 2; // X/Z 佔地半徑（模型原始單位）
   chopperModel = obj;
   obj.scale.setScalar(chopperBaseScale * chopperDebug.scale);
 
@@ -1549,12 +1591,24 @@ function resize() {
 new ResizeObserver(resize).observe(wrap);
 resize();
 
+// 讓地板定位圈（AR 的 reticle／桌機測試用的 placementMarker）跟著直升機目前實際
+// 縮放大小走：footprint 半徑 = 模型原始半徑 × 基礎縮放 × 偵錯面板的縮放滑桿，
+// 三者跟 chopperModel.scale 每幀套用的倍率完全一致，圈圈多大直升機放下去就多大
+function updateReticleFootprint() {
+  const r = chopperFootprintUnit > 0
+    ? chopperFootprintUnit * chopperBaseScale * chopperDebug.scale
+    : RETICLE_DEFAULT_RADIUS;
+  reticle.scale.setScalar(r);
+  placementMarker.scale.setScalar(r);
+}
+
 const clock = new THREE.Clock();
 function animate() {
   // requestAnimationFrame 由 8thWall pipeline 的 onRender 驅動，此處不自行呼叫
   const delta = clock.getDelta();
   if (mixer) mixer.update(delta);
   applyCityTransform();
+  updateReticleFootprint();
   if (chopperModel) {
     chopperModel.scale.setScalar(chopperBaseScale * chopperDebug.scale);
     // 旋轉中心偏移：模型相對 chopper 群組原點（旋轉軸心）反向位移，等效於把旋轉軸心移到偏移處
@@ -1790,13 +1844,8 @@ const _startXR = () => {
   document.getElementById('camera-bg').style.display = 'none';
   // AR 模式縮小直升機
   window.chopperDebug.scale = 0.7;
-
-  // 操作提示：告知用戶要點按地板
-  const _arHint = document.createElement('div');
-  _arHint.id = 'ar-place-hint';
-  _arHint.style.cssText = 'position:fixed;bottom:220px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.65);color:#fff;padding:12px 24px;border-radius:24px;font-size:16px;pointer-events:none;z-index:9999;white-space:nowrap;';
-  _arHint.textContent = '請對準地板，點按螢幕放置直升機';
-  document.body.appendChild(_arHint);
+  // 「請對準地板，點按螢幕放置」的提示已併入姿態引導遮罩的文字（見 updateOrientGuide），
+  // 角度符合後會自動切換顯示，不再另外疊加一個獨立的提示泡泡
 
   const chopperARModule = {
     name: 'chopperAR',
@@ -1875,8 +1924,8 @@ const _startXR = () => {
       chopperShouldBeVisible = true;
       applyChopperVisibility();
       reticle.visible = false;
-      const h = document.getElementById('ar-place-hint');
-      if (h) h.style.display = 'none';
+      // 放置成功震動確認（僅 Android Chrome 支援，iOS Safari 無此 API 時靜默略過）
+      if ('vibrate' in navigator) navigator.vibrate([15, 30, 15, 30, 80]);
     }
   });
 
@@ -1890,8 +1939,6 @@ const _startXR = () => {
       chopperShouldBeVisible = false;
       applyChopperVisibility();
       resetReticleStability();
-      const h = document.getElementById('ar-place-hint');
-      if (h) h.style.display = '';
     }, 2000);
   }, { passive: false });
   renderer.domElement.addEventListener('touchend', () => clearTimeout(_holdTimer));
