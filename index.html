@@ -633,6 +633,12 @@
         <span id="chopper-pivot-z-val">0</span>
         <input type="number" class="cam-max" id="chopper-pivot-z-max" value="2" step="1">
       </div>
+      <div class="cam-row">
+        <label for="cam-rot-dampen">轉動濾波壓低強度</label>
+        <input type="range" id="cam-rot-dampen" min="0" max="5" step="0.05" value="0.6">
+        <span id="cam-rot-dampen-val">0.6</span>
+        <input type="number" class="cam-max" id="cam-rot-dampen-max" value="5" step="1">
+      </div>
     </div>
   </div>
 
@@ -871,6 +877,27 @@ window.arReticleRadiusDebug = { ratio: RETICLE_RADIUS_RATIO_DEFAULT };
 
   input.addEventListener('input', () => {
     window.arReticleRadiusDebug.ratio = parseFloat(input.value);
+    val.textContent = input.value;
+  });
+
+  maxIn.addEventListener('change', () => {
+    const m = parseFloat(maxIn.value);
+    if (!isFinite(m) || m <= 0) return;
+    input.max = m;
+  });
+}
+
+// ── 轉動時壓低 cameraPosFilter beta 的強度（即時調整）───────
+// 放置後即可邊轉動手機邊調，數值越大，轉動時濾波壓得越兇（見下方 cameraPosFilter 附近
+// camRotDampenDebug 的用法），代價是轉動當下的跟手感會變差一點，抓兩者平衡點用
+window.camRotDampenDebug = { value: 0.6 };
+{
+  const input = document.getElementById('cam-rot-dampen');
+  const val   = document.getElementById('cam-rot-dampen-val');
+  const maxIn = document.getElementById('cam-rot-dampen-max');
+
+  input.addEventListener('input', () => {
+    window.camRotDampenDebug.value = parseFloat(input.value);
     val.textContent = input.value;
   });
 
@@ -1584,8 +1611,10 @@ class QuaternionOneEuroFilter {
 // 因此改用陀螺儀角速度（rotSpeed，見 onUpdate 內計算）額外壓低 cameraPosFilter 的 beta：
 // 轉動越快，beta 被壓得越低（濾波變重、犧牲一點跟手感），轉動停下來後 beta 立刻回到原本
 // 調校好的高值，不影響直線走動時的跟手性——只在真正的成因（轉動）發生當下才加重濾波。
+// 壓低強度改用偵錯面板的「轉動濾波壓低強度」滑桿（window.camRotDampenDebug）即時調整，
+// 放置後就能邊轉手機邊調，不用改程式碼重新部署。
 const CAMERA_POS_BASE_BETA  = 4.0;  // 沒有明顯轉動時使用的 beta（即先前實機調校的走動跟手值）
-const CAMERA_POS_ROT_DAMPEN = 0.6;  // 轉動時壓低 beta 的強度，數值越大壓得越兇，待實機微調
+const camRotDampenDebug = window.camRotDampenDebug;
 const cameraPosFilter = new Vector3OneEuroFilter(0.8, CAMERA_POS_BASE_BETA);
 const cameraQuatFilter = new QuaternionOneEuroFilter(0.8, 3.0);
 const _rawCamPos = new THREE.Vector3();
@@ -2201,15 +2230,16 @@ const _startXR = () => {
       const _t = performance.now() / 1000;
       _rawCamPos.set(p.x, p.y, p.z);
       _rawCamQuat.set(r.x, r.y, r.z, r.w);
-      // 轉動當下把角速度算出來，動態壓低 cameraPosFilter 的 beta（見上方 CAMERA_POS_ROT_DAMPEN
-      // 的說明）：轉得越快，這裡把 beta 壓得越低，讓轉動注入的錯誤位移被濾掉更多；停止轉動後
-      // beta 立刻回到 CAMERA_POS_BASE_BETA，不影響直線走動時原本調校好的跟手感
+      // 轉動當下把角速度算出來，動態壓低 cameraPosFilter 的 beta（壓低強度來自偵錯面板的
+      // camRotDampenDebug，見上方説明）：轉得越快，這裡把 beta 壓得越低，讓轉動注入的錯誤
+      // 位移被濾掉更多；停止轉動後 beta 立刻回到 CAMERA_POS_BASE_BETA，不影響直線走動時
+      // 原本調校好的跟手感
       if (_prevRawCamQuat) {
         const dt = Math.max(_t - _prevCamPoseT, 1e-3);
         const dot = Math.min(1, Math.abs(_rawCamQuat.dot(_prevRawCamQuat)));
         const angleRad = 2 * Math.acos(dot); // 兩幀之間的旋轉角度
         const rotSpeed = angleRad / dt; // 角速度（弧度/秒）
-        cameraPosFilter.setBeta(CAMERA_POS_BASE_BETA / (1 + CAMERA_POS_ROT_DAMPEN * rotSpeed));
+        cameraPosFilter.setBeta(CAMERA_POS_BASE_BETA / (1 + camRotDampenDebug.value * rotSpeed));
       }
       _prevRawCamQuat = (_prevRawCamQuat || new THREE.Quaternion()).copy(_rawCamQuat);
       _prevCamPoseT = _t;
