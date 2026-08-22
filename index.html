@@ -372,8 +372,8 @@
     </div>
     <div class="qa-row">
       <label for="chopper-y">上下定位</label>
-      <input type="range" id="chopper-y" min="-20" max="20" step="0.01" value="-2.08">
-      <span id="chopper-y-val">-2.08</span>
+      <input type="range" id="chopper-y" min="-20" max="20" step="0.01" value="-0.75">
+      <span id="chopper-y-val">-0.75</span>
       <input type="number" class="cam-max hidden" id="chopper-y-max" value="20" step="1">
     </div>
     <div class="qa-row">
@@ -384,7 +384,7 @@
     </div>
     <div class="qa-row">
       <label></label>
-      <button type="button" id="chopper-scale-save">儲存目前縮放為預設</button>
+      <button type="button" id="chopper-scale-save">儲存目前縮放/定位為預設</button>
       <span id="chopper-scale-save-status"></span>
     </div>
   </div>
@@ -767,10 +767,11 @@ window.moveRangeDebug = { x: 200, y: 200, z: 200 };
   });
 });
 
-// ── AR 校準值本地儲存（縮放與定位圈比例）───────────────────
-// 使用者在實機上把「縮放」調到滿意的大小後，可按「儲存目前縮放為預設」直接寫入
-// localStorage：下次同一台裝置/瀏覽器打開，AR 一開始就會套用這個校準過的縮放與比例，
-// 不用每次重新調整，也不用把數字報回來改原始碼。
+// ── AR 校準值本地儲存（縮放、定位圈比例、上下/前後定位）───────
+// 使用者在實機上把「縮放」「上下定位」等調到滿意後，可按「儲存目前縮放/定位為預設」
+// 直接寫入 localStorage：下次同一台裝置/瀏覽器打開，AR 一開始就會套用這組校準過的值，
+// 不用每次重新調整，也不用把數字報回來改原始碼。posX/posY/posZ 是舊版存檔可能沒有的
+// 選填欄位，讀取時個別檢查、缺了就沿用程式內建預設，不影響 scale/ratio 是否套用。
 const AR_CALIBRATION_KEY = 'chopperArCalibration';
 function loadArCalibration() {
   try {
@@ -780,6 +781,9 @@ function loadArCalibration() {
     if (typeof obj.scale === 'number' && obj.scale > 0 && typeof obj.ratio === 'number' && obj.ratio > 0) return obj;
   } catch (e) {}
   return null;
+}
+function numOr(v, fallback) {
+  return typeof v === 'number' && isFinite(v) ? v : fallback;
 }
 const savedArCalibration = loadArCalibration();
 // AR 模式進場時直升機縮放的預設值：有已儲存的校準值就用它，否則沿用實機測試調出來的 1.05
@@ -812,10 +816,13 @@ window.chopperDebug = { scale: 1.05 };
     input.max = m;
   });
 
-  // 「儲存目前縮放為預設」：用放置那一刻的定位圈半徑（window.lastPlacedReticleRadius，
-  // 見 touchend 放置流程）與目前縮放值反推出兩者該有的比例，一起存進 localStorage。
-  // 之所以反推比例而不是只存縮放值，是因為定位圈半徑＝縮放×比例，只改縮放的話兩者會
-  // 一起等比例變大變小、視覺落差永遠不會消失，必須連同比例一起校準才能真正對齊。
+  // 「儲存目前縮放/定位為預設」：
+  // - 用放置那一刻的定位圈半徑（window.lastPlacedReticleRadius，見 touchend 放置流程）與
+  //   目前縮放值反推出兩者該有的比例，一起存進 localStorage。之所以反推比例而不是只存
+  //   縮放值，是因為定位圈半徑＝縮放×比例，只改縮放的話兩者會一起等比例變大變小、視覺
+  //   落差永遠不會消失，必須連同比例一起校準才能真正對齊。
+  // - 同時存下目前的 chopperPosDebug.x/y/z（前後/上下/左右定位），下次載入直接套用成
+  //   絕對偏移（見下方 chopperPosDebug 初始化），不用再手動調一次。
   const saveBtn = document.getElementById('chopper-scale-save');
   const saveStatus = document.getElementById('chopper-scale-save-status');
   saveBtn.addEventListener('click', () => {
@@ -825,8 +832,11 @@ window.chopperDebug = { scale: 1.05 };
     }
     const scale = window.chopperDebug.scale;
     const ratio = window.lastPlacedReticleRadius / scale;
+    const pos = window.chopperPosDebug || {};
     try {
-      localStorage.setItem(AR_CALIBRATION_KEY, JSON.stringify({ scale, ratio }));
+      localStorage.setItem(AR_CALIBRATION_KEY, JSON.stringify({
+        scale, ratio, posX: pos.x, posY: pos.y, posZ: pos.z,
+      }));
       saveStatus.textContent = '已儲存！下次進 AR 自動套用';
     } catch (e) {
       saveStatus.textContent = '儲存失敗';
@@ -872,7 +882,12 @@ window.arReticleRadiusDebug = { ratio: RETICLE_RADIUS_RATIO_DEFAULT };
 }
 
 // ── 直升機初始位置（即時調整，疊加在搖桿移動範圍之外）──────
-window.chopperPosDebug = { x: 0, y: -2.08, z: -3 };
+// 有已儲存的校準值就用它，否則沿用實機測試調出來的預設值（見上方 loadArCalibration）
+window.chopperPosDebug = {
+  x: savedArCalibration ? numOr(savedArCalibration.posX, 0) : 0,
+  y: savedArCalibration ? numOr(savedArCalibration.posY, -0.75) : -0.75,
+  z: savedArCalibration ? numOr(savedArCalibration.posZ, -3) : -3,
+};
 [
   ['chopper-x', 'x'],
   ['chopper-y', 'y'],
@@ -881,6 +896,10 @@ window.chopperPosDebug = { x: 0, y: -2.08, z: -3 };
   const input = document.getElementById(id);
   const val   = document.getElementById(id + '-val');
   const maxIn = document.getElementById(id + '-max');
+  // 校準值可能跟滑桿目前顯示的 HTML 預設不同，載入時同步一次，避免滑桿畫面數字
+  // 跟實際套用的 chopperPosDebug 對不起來（同一個問題見上面 chopper-scale 的教訓）
+  input.value = window.chopperPosDebug[prop];
+  val.textContent = input.value;
 
   input.addEventListener('input', () => {
     window.chopperPosDebug[prop] = parseFloat(input.value);
@@ -2143,8 +2162,13 @@ const _startXR = () => {
     // 避免觸碰搖桿區域時也觸發（搖桿在右下，reticle 需可見才放置）
     if (reticle.visible && reticleStable && !arPlaced && window.orientGuideOk) {
       arAnchorPos.copy(reticleSmoothed);
-      // chopperPosDebug.y 會疊加在 arAnchorPos 上，需先扣掉才能讓飛機剛好在地板上方 0.3m
-      arAnchorPos.y += 0.001 - chopperPosDebug.y;
+      // 只加一個貼地用的極小偏移（避免完全貼合地板造成 z-fighting），不扣掉 chopperPosDebug.y：
+      // corePos 每幀都是 arAnchorPos + movePos + chopperPosDebug（見下方 animate() 內的 corePos.set），
+      // X／Z 兩軸從來不會在這裡被扣掉自己、Y 軸原本卻會被扣掉一次，導致「上下定位」在放置當下
+      // 的效果永遠被自己抵銷成固定值，改滑桿預設值對放置瞬間的高度完全沒有作用，只有放置後
+      // 再手動調整（跟放置當下的值產生差值）才看得出效果。拿掉這個抵銷，讓 Y 跟 X／Z 一致，
+      // chopperPosDebug.y 才會是「相對偵測到的地板，永遠有效」的絕對高度偏移。
+      arAnchorPos.y += 0.001;
       // 放置前機身完全靜止（見 animate() 內的 arPlaced 判斷式），這裡仍重置一次移動狀態，
       // 避免長按重置後重新放置時，殘留前一次飛行的位置／速度造成新錨點對不準 reticle
       movePos.set(0, 0, 0);
