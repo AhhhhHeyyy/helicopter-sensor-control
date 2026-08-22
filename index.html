@@ -1669,13 +1669,6 @@ const RETICLE_UNSTABLE_GRACE    = 4;    // 已穩定時，需連續這麼多幀�
 // 深度軸跳動、透視投影放大成視覺大小忽大忽小，位置濾得更穩，縮放閃爍會一併改善。
 const reticlePosFilter = new Vector3OneEuroFilter(0.5, 0.3);
 const reticleRotFilter = new QuaternionOneEuroFilter(0.5, 0.3);
-// 放置後的背景無感校正：實機測試證實漂移是「轉動當下」把旋轉誤判成位移注入造成的
-// （雙腳完全不動、只轉手機/身體也會飄），不是走動距離的累積誤差，代表轉動停下來、
-// 追蹤重新穩定之後，當下的誤差量大致就是「這次要修正的全部」，不會像持續累積的誤差
-// 一樣越晚修越追不上，所以可以放心用很小的 alpha 慢慢靠過去，只要求「穩定時才修」
-// （見下方 onUpdate 內 arPlaced && reticleStable 那段），完全不需要在轉動途中硬追。
-const BACKGROUND_RECAL_ALPHA = 0.02; // 每幀往目標靠攏的比例，初始估計值，待實機微調
-const _recalTarget = new THREE.Vector3();
 const _hitPosTmp = new THREE.Vector3();
 const _hitRotTmp = new THREE.Quaternion();
 const reticleHistory = [];
@@ -2216,76 +2209,64 @@ const _startXR = () => {
         camera.projectionMatrix.fromArray(intrinsics);
         camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
       }
-      // 地板 hit-test：不管放置前後都持續取樣——放置前用來讓 reticle 自動浮在地板上；
-      // 放置後不顯示 reticle，改成在背景判斷偵測結果夠不夠穩定，穩定時才輕輕校正
-      // arAnchorPos（見下方 arPlaced && reticleStable 那段），藉此無感修正 SLAM 漂移，
-      // 全程不疊加任何提示或視覺元素，不會打斷飛行操作
-      const _ch = XR8.XrController.hitTest(0.5, 0.5, { DETECTED_SURFACE: true });
-      if (_ch && _ch.length > 0) {
-        const hp = _ch[0].position;
-        const hr = _ch[0].rotation; // 命中表面法向量對應的四元數，貼平面/桌緣等非水平表面時會跟著傾斜
-        _hitPosTmp.set(hp.x, hp.y, hp.z);
-        reticlePosFilter.filter(_hitPosTmp, _t, reticleSmoothed); // 第一筆樣本濾波器會直接對齊，不會從原點平滑過來
-        if (hr) {
-          _hitRotTmp.set(hr.x, hr.y, hr.z, hr.w);
-          reticleRotFilter.filter(_hitRotTmp, _t, reticleSmoothedQuat);
-        }
-        if (!arPlaced) {
+      // 未放置時：持續偵測螢幕中央地板，讓 reticle 自動浮在地板上
+      // （原本這裡試過放置後仍持續對螢幕中央做 hit-test，用穩定時機無感校正 arAnchorPos，
+      // 但實機測試發現行不通：飛行中螢幕中央對到的地板，跟直升機原本該在的位置毫無關係
+      // ——只有放置當下，準心對準的地板才等於「使用者要放的那個點」。拿飛行中準心隨機
+      // 掃到的地板去校正錨點，等於把直升機拖去一個無關的隨機位置，難怪看起來一直在動、
+      // 卻幾乎都不對。沒有 VPS/持久錨點這類獨立於目前 camera pose 的參考點，軟體没辦法
+      // 自行判斷「現在對準的地板是不是原本那個點」，這件事只有使用者的眼睛判斷得出來，
+      // 所以校正一定要使用者主動介入才有意義，见下方 ar-recal-btn 手動校正按鈕。）
+      if (!arPlaced) {
+        const _ch = XR8.XrController.hitTest(0.5, 0.5, { DETECTED_SURFACE: true });
+        if (_ch && _ch.length > 0) {
+          const hp = _ch[0].position;
+          const hr = _ch[0].rotation; // 命中表面法向量對應的四元數，貼平面/桌緣等非水平表面時會跟著傾斜
+          _hitPosTmp.set(hp.x, hp.y, hp.z);
+          reticlePosFilter.filter(_hitPosTmp, _t, reticleSmoothed); // 第一筆樣本濾波器會直接對齊，不會從原點平滑過來
+          if (hr) {
+            _hitRotTmp.set(hr.x, hr.y, hr.z, hr.w);
+            reticleRotFilter.filter(_hitRotTmp, _t, reticleSmoothedQuat);
+          }
           reticle.position.copy(reticleSmoothed);
           reticle.quaternion.copy(reticleSmoothedQuat);
           reticle.visible = true;
           reticlePlane.position.copy(reticleSmoothed);
           reticlePlane.quaternion.copy(reticleSmoothedQuat);
           reticlePlane.visible = true;
-        }
 
-        // 遠距離時單眼 SLAM 的深度估計雜訊較大，需連續 N 幀的偵測結果都落在容許誤差內
-        // 才視為穩定，避免瞬間雜訊造成放置高度偏差（懸空／陷地）；改用平滑後的位置
-        // （reticleSmoothed）取樣，比直接用單幀原始 hp 雜訊小很多，變綠後也比較不會抖動
-        reticleHistory.push(reticleSmoothed.clone());
-        if (reticleHistory.length > RETICLE_STABLE_FRAMES) reticleHistory.shift();
-        if (reticleHistory.length === RETICLE_STABLE_FRAMES) {
-          const avg = new THREE.Vector3();
-          reticleHistory.forEach(v => avg.add(v));
-          avg.multiplyScalar(1 / reticleHistory.length);
-          let maxDev = 0;
-          reticleHistory.forEach(v => { maxDev = Math.max(maxDev, v.distanceTo(avg)); });
-          if (!reticleStable) {
-            reticleStable = maxDev < RETICLE_STABLE_TOL;
-            reticleUnstableStreak = 0;
-          } else if (maxDev < RETICLE_STABLE_TOL_EXIT) {
-            reticleUnstableStreak = 0;
-          } else if (++reticleUnstableStreak >= RETICLE_UNSTABLE_GRACE) {
+          // 遠距離時單眼 SLAM 的深度估計雜訊較大，需連續 N 幀的偵測結果都落在容許誤差內
+          // 才視為穩定，避免瞬間雜訊造成放置高度偏差（懸空／陷地）；改用平滑後的位置
+          // （reticleSmoothed）取樣，比直接用單幀原始 hp 雜訊小很多，變綠後也比較不會抖動
+          reticleHistory.push(reticleSmoothed.clone());
+          if (reticleHistory.length > RETICLE_STABLE_FRAMES) reticleHistory.shift();
+          if (reticleHistory.length === RETICLE_STABLE_FRAMES) {
+            const avg = new THREE.Vector3();
+            reticleHistory.forEach(v => avg.add(v));
+            avg.multiplyScalar(1 / reticleHistory.length);
+            let maxDev = 0;
+            reticleHistory.forEach(v => { maxDev = Math.max(maxDev, v.distanceTo(avg)); });
+            if (!reticleStable) {
+              reticleStable = maxDev < RETICLE_STABLE_TOL;
+              reticleUnstableStreak = 0;
+            } else if (maxDev < RETICLE_STABLE_TOL_EXIT) {
+              reticleUnstableStreak = 0;
+            } else if (++reticleUnstableStreak >= RETICLE_UNSTABLE_GRACE) {
+              reticleStable = false;
+              reticleUnstableStreak = 0;
+            }
+          } else {
             reticleStable = false;
             reticleUnstableStreak = 0;
           }
-        } else {
-          reticleStable = false;
-          reticleUnstableStreak = 0;
-        }
-
-        if (!arPlaced) {
           reticleMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
           reticlePlaneFillMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
           reticleGridHelper.material.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
-        } else if (reticleStable) {
-          // 背景無感校正：只有連續穩定（代表這段時間沒有明顯轉動、樣本可信）才觸發，
-          // 且用很小的 alpha 每幀慢慢靠過去、不是直接 snap，跟手動按鈕（見下方
-          // ar-recal-btn，用同一個反推公式）互補——按鈕是隨手要立即校正時用，這裡
-          // 是平常飛行中不知不覺、感覺不到位移的漸進修正
-          _recalTarget.set(
-            reticleSmoothed.x - movePos.x - chopperPosDebug.x,
-            reticleSmoothed.y - movePos.y - chopperPosDebug.y + 0.001,
-            reticleSmoothed.z - movePos.z - chopperPosDebug.z
-          );
-          arAnchorPos.lerp(_recalTarget, BACKGROUND_RECAL_ALPHA);
-        }
-      } else {
-        if (!arPlaced) {
+        } else {
           reticle.visible = false;
           reticlePlane.visible = false;
+          resetReticleStability();
         }
-        resetReticleStability();
       }
     },
 
