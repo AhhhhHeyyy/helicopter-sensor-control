@@ -208,6 +208,16 @@
     color: #aaa; font-size: 0.78rem; cursor: pointer;
   }
   #orient-btn:active { opacity: 0.7; }
+  /* ── AR 快速校正按鈕：走動累積 SLAM 漂移後，對準原本位置點一下就地校正，
+     不跑姿態引導／穩定判定那一整套流程，只用短震動回饋，避免多餘提示打斷操作 ── */
+  #ar-recal-btn {
+    position: fixed; top: 46px; right: 10px; z-index: 100;
+    padding: 6px 14px; border-radius: 8px;
+    border: 1px solid #444; background: rgba(15,15,15,0.88);
+    color: #aaa; font-size: 0.78rem; cursor: pointer;
+  }
+  #ar-recal-btn:active { opacity: 0.7; }
+  #ar-recal-btn.hidden { display: none; }
   /* ── 橫式模式 ── */
   body.landscape {
     padding: 0; align-items: stretch;
@@ -361,6 +371,9 @@
 <div id="screen-live">
   <button id="orient-btn">切換橫式</button>
   <button id="debug-toggle">調整面板</button>
+  <!-- 只在 AR 模式且已放置後才顯示：對準直升機原本該在的位置點一下就地校正 SLAM 累積漂移，
+       不需重新走一次「調角度→等偵測穩定→放置」的完整流程（見下方 recalibrateArAnchor） -->
+  <button id="ar-recal-btn" class="hidden">校正位置</button>
 
   <!-- 直升機定位快調面板：前後/上下/縮放，不用點「調整面板」展開就能直接看到、直接調 -->
   <div id="quick-adjust">
@@ -1656,6 +1669,13 @@ const RETICLE_UNSTABLE_GRACE    = 4;    // 已穩定時，需連續這麼多幀�
 // 深度軸跳動、透視投影放大成視覺大小忽大忽小，位置濾得更穩，縮放閃爍會一併改善。
 const reticlePosFilter = new Vector3OneEuroFilter(0.5, 0.3);
 const reticleRotFilter = new QuaternionOneEuroFilter(0.5, 0.3);
+// 放置後的背景無感校正：實機測試證實漂移是「轉動當下」把旋轉誤判成位移注入造成的
+// （雙腳完全不動、只轉手機/身體也會飄），不是走動距離的累積誤差，代表轉動停下來、
+// 追蹤重新穩定之後，當下的誤差量大致就是「這次要修正的全部」，不會像持續累積的誤差
+// 一樣越晚修越追不上，所以可以放心用很小的 alpha 慢慢靠過去，只要求「穩定時才修」
+// （見下方 onUpdate 內 arPlaced && reticleStable 那段），完全不需要在轉動途中硬追。
+const BACKGROUND_RECAL_ALPHA = 0.02; // 每幀往目標靠攏的比例，初始估計值，待實機微調
+const _recalTarget = new THREE.Vector3();
 const _hitPosTmp = new THREE.Vector3();
 const _hitRotTmp = new THREE.Quaternion();
 const reticleHistory = [];
@@ -2196,57 +2216,76 @@ const _startXR = () => {
         camera.projectionMatrix.fromArray(intrinsics);
         camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
       }
-      // 未放置時：持續偵測螢幕中央地板，讓 reticle 自動浮在地板上
-      if (!arPlaced) {
-        const _ch = XR8.XrController.hitTest(0.5, 0.5, { DETECTED_SURFACE: true });
-        if (_ch && _ch.length > 0) {
-          const hp = _ch[0].position;
-          const hr = _ch[0].rotation; // 命中表面法向量對應的四元數，貼平面/桌緣等非水平表面時會跟著傾斜
-          _hitPosTmp.set(hp.x, hp.y, hp.z);
-          reticlePosFilter.filter(_hitPosTmp, _t, reticleSmoothed); // 第一筆樣本濾波器會直接對齊，不會從原點平滑過來
-          if (hr) {
-            _hitRotTmp.set(hr.x, hr.y, hr.z, hr.w);
-            reticleRotFilter.filter(_hitRotTmp, _t, reticleSmoothedQuat);
-          }
+      // 地板 hit-test：不管放置前後都持續取樣——放置前用來讓 reticle 自動浮在地板上；
+      // 放置後不顯示 reticle，改成在背景判斷偵測結果夠不夠穩定，穩定時才輕輕校正
+      // arAnchorPos（見下方 arPlaced && reticleStable 那段），藉此無感修正 SLAM 漂移，
+      // 全程不疊加任何提示或視覺元素，不會打斷飛行操作
+      const _ch = XR8.XrController.hitTest(0.5, 0.5, { DETECTED_SURFACE: true });
+      if (_ch && _ch.length > 0) {
+        const hp = _ch[0].position;
+        const hr = _ch[0].rotation; // 命中表面法向量對應的四元數，貼平面/桌緣等非水平表面時會跟著傾斜
+        _hitPosTmp.set(hp.x, hp.y, hp.z);
+        reticlePosFilter.filter(_hitPosTmp, _t, reticleSmoothed); // 第一筆樣本濾波器會直接對齊，不會從原點平滑過來
+        if (hr) {
+          _hitRotTmp.set(hr.x, hr.y, hr.z, hr.w);
+          reticleRotFilter.filter(_hitRotTmp, _t, reticleSmoothedQuat);
+        }
+        if (!arPlaced) {
           reticle.position.copy(reticleSmoothed);
           reticle.quaternion.copy(reticleSmoothedQuat);
           reticle.visible = true;
           reticlePlane.position.copy(reticleSmoothed);
           reticlePlane.quaternion.copy(reticleSmoothedQuat);
           reticlePlane.visible = true;
+        }
 
-          // 遠距離時單眼 SLAM 的深度估計雜訊較大，需連續 N 幀的偵測結果都落在容許誤差內
-          // 才視為穩定，避免瞬間雜訊造成放置高度偏差（懸空／陷地）；改用平滑後的位置
-          // （reticleSmoothed）取樣，比直接用單幀原始 hp 雜訊小很多，變綠後也比較不會抖動
-          reticleHistory.push(reticleSmoothed.clone());
-          if (reticleHistory.length > RETICLE_STABLE_FRAMES) reticleHistory.shift();
-          if (reticleHistory.length === RETICLE_STABLE_FRAMES) {
-            const avg = new THREE.Vector3();
-            reticleHistory.forEach(v => avg.add(v));
-            avg.multiplyScalar(1 / reticleHistory.length);
-            let maxDev = 0;
-            reticleHistory.forEach(v => { maxDev = Math.max(maxDev, v.distanceTo(avg)); });
-            if (!reticleStable) {
-              reticleStable = maxDev < RETICLE_STABLE_TOL;
-              reticleUnstableStreak = 0;
-            } else if (maxDev < RETICLE_STABLE_TOL_EXIT) {
-              reticleUnstableStreak = 0;
-            } else if (++reticleUnstableStreak >= RETICLE_UNSTABLE_GRACE) {
-              reticleStable = false;
-              reticleUnstableStreak = 0;
-            }
-          } else {
+        // 遠距離時單眼 SLAM 的深度估計雜訊較大，需連續 N 幀的偵測結果都落在容許誤差內
+        // 才視為穩定，避免瞬間雜訊造成放置高度偏差（懸空／陷地）；改用平滑後的位置
+        // （reticleSmoothed）取樣，比直接用單幀原始 hp 雜訊小很多，變綠後也比較不會抖動
+        reticleHistory.push(reticleSmoothed.clone());
+        if (reticleHistory.length > RETICLE_STABLE_FRAMES) reticleHistory.shift();
+        if (reticleHistory.length === RETICLE_STABLE_FRAMES) {
+          const avg = new THREE.Vector3();
+          reticleHistory.forEach(v => avg.add(v));
+          avg.multiplyScalar(1 / reticleHistory.length);
+          let maxDev = 0;
+          reticleHistory.forEach(v => { maxDev = Math.max(maxDev, v.distanceTo(avg)); });
+          if (!reticleStable) {
+            reticleStable = maxDev < RETICLE_STABLE_TOL;
+            reticleUnstableStreak = 0;
+          } else if (maxDev < RETICLE_STABLE_TOL_EXIT) {
+            reticleUnstableStreak = 0;
+          } else if (++reticleUnstableStreak >= RETICLE_UNSTABLE_GRACE) {
             reticleStable = false;
             reticleUnstableStreak = 0;
           }
+        } else {
+          reticleStable = false;
+          reticleUnstableStreak = 0;
+        }
+
+        if (!arPlaced) {
           reticleMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
           reticlePlaneFillMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
           reticleGridHelper.material.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
-        } else {
+        } else if (reticleStable) {
+          // 背景無感校正：只有連續穩定（代表這段時間沒有明顯轉動、樣本可信）才觸發，
+          // 且用很小的 alpha 每幀慢慢靠過去、不是直接 snap，跟手動按鈕（見下方
+          // ar-recal-btn，用同一個反推公式）互補——按鈕是隨手要立即校正時用，這裡
+          // 是平常飛行中不知不覺、感覺不到位移的漸進修正
+          _recalTarget.set(
+            reticleSmoothed.x - movePos.x - chopperPosDebug.x,
+            reticleSmoothed.y - movePos.y - chopperPosDebug.y + 0.001,
+            reticleSmoothed.z - movePos.z - chopperPosDebug.z
+          );
+          arAnchorPos.lerp(_recalTarget, BACKGROUND_RECAL_ALPHA);
+        }
+      } else {
+        if (!arPlaced) {
           reticle.visible = false;
           reticlePlane.visible = false;
-          resetReticleStability();
         }
+        resetReticleStability();
       }
     },
 
@@ -2286,6 +2325,7 @@ const _startXR = () => {
       window.lastPlacedReticleRadius = reticle.scale.x;
       reticle.visible = false;
       reticlePlane.visible = false;
+      arRecalBtn.classList.remove('hidden');
       // 放置成功震動確認（僅 Android Chrome 支援，iOS Safari 無此 API 時靜默略過）
       if ('vibrate' in navigator) navigator.vibrate([15, 30, 15, 30, 80]);
     }
@@ -2301,9 +2341,42 @@ const _startXR = () => {
       chopperShouldBeVisible = false;
       applyChopperVisibility();
       resetReticleStability();
+      arRecalBtn.classList.add('hidden');
     }, 2000);
   }, { passive: false });
   renderer.domElement.addEventListener('touchend', () => clearTimeout(_holdTimer));
+
+  // ── AR 快速校正：走動一段時間後單眼 SLAM 的累積漂移會讓直升機跟真實房間對不齊
+  // （camera pose 濾波壓不掉這種低頻誤差，見上方 cameraPosFilter 的說明），比起要求
+  // 使用者長按重置、重新跑一次「調角度→等偵測穩定→放置」的完整流程，這裡提供一個
+  // 輕量校正：對準直升機原本該在的位置點一下按鈕，只取「這一瞬間」的單次 hit-test
+  // 結果，不等多幀穩定、不疊加姿態引導遮罩，才適合飛到一半隨手按一下。
+  // 直接把 arAnchorPos 設成 hit 點會忽略目前搖桿飛出去的相對位移／偵錯面板位置偏移，
+  // 校正瞬間直升機會被拉回錨點——這裡改成反推 arAnchorPos，讓 corePos（= arAnchorPos +
+  // movePos + chopperPosDebug，見上方 touchend 放置流程的說明）校正後正好等於這次瞄準的
+  // hit 點，飛行中的相對位移不會被吃掉，只修正「錨點本身」的世界座標誤差。
+  const arRecalBtn = document.getElementById('ar-recal-btn');
+  arRecalBtn.addEventListener('touchend', () => {
+    if (!arPlaced) return;
+    const ch = XR8.XrController.hitTest(0.5, 0.5, { DETECTED_SURFACE: true });
+    if (!ch || ch.length === 0) {
+      if ('vibrate' in navigator) navigator.vibrate(200); // 沒偵測到地板：短震提示，不彈提示框
+      return;
+    }
+    const hp = ch[0].position;
+    arAnchorPos.set(
+      hp.x - movePos.x - chopperPosDebug.x,
+      hp.y - movePos.y - chopperPosDebug.y + 0.001,
+      hp.z - movePos.z - chopperPosDebug.z
+    );
+    chopperVisualInit = false; // 校正後機身視覺位置直接對齊，不從舊位置飛過來
+    recoilOffsetY = 0;
+    recoilVelY = 0;
+    prevVelYPos = 0;
+    pitchRecoilOffset = 0;
+    pitchRecoilVel = 0;
+    if ('vibrate' in navigator) navigator.vibrate([15, 30, 15, 30, 80]);
+  });
 
   XR8.addCameraPipelineModules([
     XR8.GlTextureRenderer.pipelineModule(), // 渲染相機畫面到背景
