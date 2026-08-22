@@ -208,16 +208,6 @@
     color: #aaa; font-size: 0.78rem; cursor: pointer;
   }
   #orient-btn:active { opacity: 0.7; }
-  /* ── AR 快速校正按鈕：走動累積 SLAM 漂移後，對準原本位置點一下就地校正，
-     不跑姿態引導／穩定判定那一整套流程，只用短震動回饋，避免多餘提示打斷操作 ── */
-  #ar-recal-btn {
-    position: fixed; top: 46px; right: 10px; z-index: 100;
-    padding: 6px 14px; border-radius: 8px;
-    border: 1px solid #444; background: rgba(15,15,15,0.88);
-    color: #aaa; font-size: 0.78rem; cursor: pointer;
-  }
-  #ar-recal-btn:active { opacity: 0.7; }
-  #ar-recal-btn.hidden { display: none; }
   /* ── 橫式模式 ── */
   body.landscape {
     padding: 0; align-items: stretch;
@@ -371,9 +361,6 @@
 <div id="screen-live">
   <button id="orient-btn">切換橫式</button>
   <button id="debug-toggle">調整面板</button>
-  <!-- 只在 AR 模式且已放置後才顯示：對準直升機原本該在的位置點一下就地校正 SLAM 累積漂移，
-       不需重新走一次「調角度→等偵測穩定→放置」的完整流程（見下方 recalibrateArAnchor） -->
-  <button id="ar-recal-btn" class="hidden">校正位置</button>
 
   <!-- 直升機定位快調面板：前後/上下/縮放，不用點「調整面板」展開就能直接看到、直接調 -->
   <div id="quick-adjust">
@@ -1560,6 +1547,7 @@ class Vector3OneEuroFilter {
   filter(v, t, out = v) {
     return out.set(this.fx.filter(v.x, t), this.fy.filter(v.y, t), this.fz.filter(v.z, t));
   }
+  setBeta(b) { this.fx.beta = this.fy.beta = this.fz.beta = b; }
   reset() { this.fx.reset(); this.fy.reset(); this.fz.reset(); }
 }
 class QuaternionOneEuroFilter {
@@ -1588,12 +1576,22 @@ class QuaternionOneEuroFilter {
 // 大範圍位移也一併重濾，會造成畫面上的直升機持續「追不上」真實鏡頭位置，走越快看起來
 // 偏移越大。實機測試：調大 beta 後，快速走動時的視覺滯後感確實改善，但走一段距離
 // 再停下來，直升機仍對不回原本的位置——代表這不只是濾波滯後，是單眼 SLAM 本身
-// 的累積漂移（camera pose 追蹤誤差），濾波只能壓高頻抖動，無法修正這種低頻誤差，
-// 需要靠其他手段（例如重新定位 UI）處理。
-const cameraPosFilter = new Vector3OneEuroFilter(0.8, 4.0);
+// 的累積漂移（camera pose 追蹤誤差），濾波只能壓高頻抖動，無法修正這種低頻誤差。
+// 後續實機測試進一步發現：雙腳完全不動、純粹轉動手機也會飄——代表這個漂移是「轉動
+// 當下」被注入的（單眼 SLAM 常見的旋轉-位移混淆：轉動被誤判成一部分位移），不是走動
+// 距離的累積。1€ Filter 只看「訊號本身變化多快」來決定濾多少，轉動當下注入的錯誤位移
+// 本身變化也很快，會被 beta 判定成「真實快速移動」而幾乎直接放行，沒辦法分辨。
+// 因此改用陀螺儀角速度（rotSpeed，見 onUpdate 內計算）額外壓低 cameraPosFilter 的 beta：
+// 轉動越快，beta 被壓得越低（濾波變重、犧牲一點跟手感），轉動停下來後 beta 立刻回到原本
+// 調校好的高值，不影響直線走動時的跟手性——只在真正的成因（轉動）發生當下才加重濾波。
+const CAMERA_POS_BASE_BETA  = 4.0;  // 沒有明顯轉動時使用的 beta（即先前實機調校的走動跟手值）
+const CAMERA_POS_ROT_DAMPEN = 0.6;  // 轉動時壓低 beta 的強度，數值越大壓得越兇，待實機微調
+const cameraPosFilter = new Vector3OneEuroFilter(0.8, CAMERA_POS_BASE_BETA);
 const cameraQuatFilter = new QuaternionOneEuroFilter(0.8, 3.0);
 const _rawCamPos = new THREE.Vector3();
 const _rawCamQuat = new THREE.Quaternion();
+let _prevRawCamQuat = null; // 用來算兩幀之間的旋轉角速度，第一幀沒有基準先跳過
+let _prevCamPoseT = null;
 
 // ── AR 地板偵測：錨點與 Reticle ────────────────────────────
 let arAnchorPos = new THREE.Vector3(0, 0, 0);
@@ -2203,6 +2201,18 @@ const _startXR = () => {
       const _t = performance.now() / 1000;
       _rawCamPos.set(p.x, p.y, p.z);
       _rawCamQuat.set(r.x, r.y, r.z, r.w);
+      // 轉動當下把角速度算出來，動態壓低 cameraPosFilter 的 beta（見上方 CAMERA_POS_ROT_DAMPEN
+      // 的說明）：轉得越快，這裡把 beta 壓得越低，讓轉動注入的錯誤位移被濾掉更多；停止轉動後
+      // beta 立刻回到 CAMERA_POS_BASE_BETA，不影響直線走動時原本調校好的跟手感
+      if (_prevRawCamQuat) {
+        const dt = Math.max(_t - _prevCamPoseT, 1e-3);
+        const dot = Math.min(1, Math.abs(_rawCamQuat.dot(_prevRawCamQuat)));
+        const angleRad = 2 * Math.acos(dot); // 兩幀之間的旋轉角度
+        const rotSpeed = angleRad / dt; // 角速度（弧度/秒）
+        cameraPosFilter.setBeta(CAMERA_POS_BASE_BETA / (1 + CAMERA_POS_ROT_DAMPEN * rotSpeed));
+      }
+      _prevRawCamQuat = (_prevRawCamQuat || new THREE.Quaternion()).copy(_rawCamQuat);
+      _prevCamPoseT = _t;
       camera.position.copy(cameraPosFilter.filter(_rawCamPos, _t));
       camera.quaternion.copy(cameraQuatFilter.filter(_rawCamQuat, _t));
       if (intrinsics) {
@@ -2216,7 +2226,8 @@ const _startXR = () => {
       // 掃到的地板去校正錨點，等於把直升機拖去一個無關的隨機位置，難怪看起來一直在動、
       // 卻幾乎都不對。沒有 VPS/持久錨點這類獨立於目前 camera pose 的參考點，軟體没辦法
       // 自行判斷「現在對準的地板是不是原本那個點」，這件事只有使用者的眼睛判斷得出來，
-      // 所以校正一定要使用者主動介入才有意義，见下方 ar-recal-btn 手動校正按鈕。）
+      // 所以已拿掉這個機制，改成上面 cameraPosFilter 動態壓低 beta，從源頭減少轉動時
+      // 注入的錯誤位移，不試圖再事後校正。）
       if (!arPlaced) {
         const _ch = XR8.XrController.hitTest(0.5, 0.5, { DETECTED_SURFACE: true });
         if (_ch && _ch.length > 0) {
@@ -2306,7 +2317,6 @@ const _startXR = () => {
       window.lastPlacedReticleRadius = reticle.scale.x;
       reticle.visible = false;
       reticlePlane.visible = false;
-      arRecalBtn.classList.remove('hidden');
       // 放置成功震動確認（僅 Android Chrome 支援，iOS Safari 無此 API 時靜默略過）
       if ('vibrate' in navigator) navigator.vibrate([15, 30, 15, 30, 80]);
     }
@@ -2322,42 +2332,9 @@ const _startXR = () => {
       chopperShouldBeVisible = false;
       applyChopperVisibility();
       resetReticleStability();
-      arRecalBtn.classList.add('hidden');
     }, 2000);
   }, { passive: false });
   renderer.domElement.addEventListener('touchend', () => clearTimeout(_holdTimer));
-
-  // ── AR 快速校正：走動一段時間後單眼 SLAM 的累積漂移會讓直升機跟真實房間對不齊
-  // （camera pose 濾波壓不掉這種低頻誤差，見上方 cameraPosFilter 的說明），比起要求
-  // 使用者長按重置、重新跑一次「調角度→等偵測穩定→放置」的完整流程，這裡提供一個
-  // 輕量校正：對準直升機原本該在的位置點一下按鈕，只取「這一瞬間」的單次 hit-test
-  // 結果，不等多幀穩定、不疊加姿態引導遮罩，才適合飛到一半隨手按一下。
-  // 直接把 arAnchorPos 設成 hit 點會忽略目前搖桿飛出去的相對位移／偵錯面板位置偏移，
-  // 校正瞬間直升機會被拉回錨點——這裡改成反推 arAnchorPos，讓 corePos（= arAnchorPos +
-  // movePos + chopperPosDebug，見上方 touchend 放置流程的說明）校正後正好等於這次瞄準的
-  // hit 點，飛行中的相對位移不會被吃掉，只修正「錨點本身」的世界座標誤差。
-  const arRecalBtn = document.getElementById('ar-recal-btn');
-  arRecalBtn.addEventListener('touchend', () => {
-    if (!arPlaced) return;
-    const ch = XR8.XrController.hitTest(0.5, 0.5, { DETECTED_SURFACE: true });
-    if (!ch || ch.length === 0) {
-      if ('vibrate' in navigator) navigator.vibrate(200); // 沒偵測到地板：短震提示，不彈提示框
-      return;
-    }
-    const hp = ch[0].position;
-    arAnchorPos.set(
-      hp.x - movePos.x - chopperPosDebug.x,
-      hp.y - movePos.y - chopperPosDebug.y + 0.001,
-      hp.z - movePos.z - chopperPosDebug.z
-    );
-    chopperVisualInit = false; // 校正後機身視覺位置直接對齊，不從舊位置飛過來
-    recoilOffsetY = 0;
-    recoilVelY = 0;
-    prevVelYPos = 0;
-    pitchRecoilOffset = 0;
-    pitchRecoilVel = 0;
-    if ('vibrate' in navigator) navigator.vibrate([15, 30, 15, 30, 80]);
-  });
 
   XR8.addCameraPipelineModules([
     XR8.GlTextureRenderer.pipelineModule(), // 渲染相機畫面到背景
