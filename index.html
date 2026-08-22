@@ -1491,6 +1491,91 @@ const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
 dirLight.position.set(3, 5, 2);
 scene.add(dirLight);
 
+// ── 1€ Filter（自適應低通濾波）───────────────────────────────
+// 用於 8thWall SLAM camera pose／reticle 地板命中位置：這類 AR 追蹤資料靜止時雜訊要濾得重，
+// 但鏡頭／手快速移動時又要幾乎即時跟上，固定係數的 lerp 沒辦法兩者兼顧（太輕壓不掉手震，
+// 太重會讓內容明顯「跟不上」畫面，鏡頭快速移動時尤其明顯）。
+// 1€ Filter（Casiez et al. 2012）依訊號變化速度動態調整截止頻率：慢動作時濾波器變「重」，
+// 快動作時自動變「輕」。minCutoff 控制靜止時的濾波強度（越小越重），beta 控制速度對濾波的
+// 削弱程度（越大，快速移動時濾波介入越少）。
+class OneEuroFilter1D {
+  constructor(minCutoff, beta, dCutoff = 1.0) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.dCutoff = dCutoff;
+    this.xPrev = null;
+    this.dxPrev = 0;
+    this.tPrev = null;
+  }
+  static alpha(te, cutoff) {
+    const r = 2 * Math.PI * cutoff * te;
+    return r / (r + 1);
+  }
+  filter(x, t) {
+    if (this.tPrev === null) {
+      this.tPrev = t;
+      this.xPrev = x;
+      return x;
+    }
+    const te = Math.max(t - this.tPrev, 1e-3); // 避免同一幀內 dt=0 導致除以 0
+    const dx = (x - this.xPrev) / te;
+    const aD = OneEuroFilter1D.alpha(te, this.dCutoff);
+    const dxHat = this.dxPrev + aD * (dx - this.dxPrev);
+    const cutoff = this.minCutoff + this.beta * Math.abs(dxHat);
+    const a = OneEuroFilter1D.alpha(te, cutoff);
+    const xHat = this.xPrev + a * (x - this.xPrev);
+    this.tPrev = t;
+    this.xPrev = xHat;
+    this.dxPrev = dxHat;
+    return xHat;
+  }
+  reset() {
+    this.xPrev = null;
+    this.dxPrev = 0;
+    this.tPrev = null;
+  }
+}
+
+// Vector3／Quaternion 版本：內部各分量各自套一顆 1D 濾波器。四元數濾完各分量後需要重新
+// 正規化，小角度雜訊下這個近似誤差可忽略不計，是 AR 追蹤濾波的常見做法。
+class Vector3OneEuroFilter {
+  constructor(minCutoff, beta) {
+    this.fx = new OneEuroFilter1D(minCutoff, beta);
+    this.fy = new OneEuroFilter1D(minCutoff, beta);
+    this.fz = new OneEuroFilter1D(minCutoff, beta);
+  }
+  filter(v, t, out = v) {
+    return out.set(this.fx.filter(v.x, t), this.fy.filter(v.y, t), this.fz.filter(v.z, t));
+  }
+  reset() { this.fx.reset(); this.fy.reset(); this.fz.reset(); }
+}
+class QuaternionOneEuroFilter {
+  constructor(minCutoff, beta) {
+    this.fx = new OneEuroFilter1D(minCutoff, beta);
+    this.fy = new OneEuroFilter1D(minCutoff, beta);
+    this.fz = new OneEuroFilter1D(minCutoff, beta);
+    this.fw = new OneEuroFilter1D(minCutoff, beta);
+    this._lastRaw = null; // q 與 -q 是同一個旋轉，但濾波器不能直接混，需偵測正負號翻轉並校正
+  }
+  filter(q, t, out = q) {
+    let { x, y, z, w } = q;
+    if (this._lastRaw && (x * this._lastRaw.x + y * this._lastRaw.y + z * this._lastRaw.z + w * this._lastRaw.w) < 0) {
+      x = -x; y = -y; z = -z; w = -w;
+    }
+    this._lastRaw = { x, y, z, w };
+    out.set(this.fx.filter(x, t), this.fy.filter(y, t), this.fz.filter(z, t), this.fw.filter(w, t));
+    return out.normalize();
+  }
+  reset() { this.fx.reset(); this.fy.reset(); this.fz.reset(); this.fw.reset(); this._lastRaw = null; }
+}
+
+// camera pose 濾波：修正「鏡頭移動時直升機微幅亂飄」——原本每幀直接套用 SLAM 原始 pose，
+// 追蹤雜訊會直接反映成畫面抖動。數值是初始估計，待實機微調。
+const cameraPosFilter = new Vector3OneEuroFilter(0.8, 0.3);
+const cameraQuatFilter = new QuaternionOneEuroFilter(0.8, 0.4);
+const _rawCamPos = new THREE.Vector3();
+const _rawCamQuat = new THREE.Quaternion();
+
 // ── AR 地板偵測：錨點與 Reticle ────────────────────────────
 let arAnchorPos = new THREE.Vector3(0, 0, 0);
 let arPlaced = false;
@@ -1560,21 +1645,27 @@ const RETICLE_STABLE_FRAMES     = 8;    // 需連續納入判斷的幀數
 const RETICLE_STABLE_TOL        = 0.035; // 進入穩定（變綠）的容許誤差（公尺）
 const RETICLE_STABLE_TOL_EXIT   = 0.07;  // 已穩定時，要超過這個更寬鬆的誤差才算「可能不穩定」
 const RETICLE_UNSTABLE_GRACE    = 4;    // 已穩定時，需連續這麼多幀都超過寬鬆誤差，才真的跳回不穩定
-const RETICLE_SMOOTH_ALPHA  = 0.25; // 平滑係數（越小越平滑但反應越慢）
+// 瞄準地板時的手震噪聲比走動時的鏡頭雜訊更明顯（幾乎靜止對準），濾得比 camera pose 更重一點；
+// 這同時修正「定位圓圈/網格經常高頻縮放」——圈圈實際半徑固定，縮放閃爍是命中位置沿鏡頭
+// 深度軸跳動、透視投影放大成視覺大小忽大忽小，位置濾得更穩，縮放閃爍會一併改善。
+const reticlePosFilter = new Vector3OneEuroFilter(0.5, 0.3);
+const reticleRotFilter = new QuaternionOneEuroFilter(0.5, 0.3);
+const _hitPosTmp = new THREE.Vector3();
+const _hitRotTmp = new THREE.Quaternion();
 const reticleHistory = [];
 const reticleSmoothed = new THREE.Vector3();
 // 表面角度（貼合實際偵測到的傾斜方向，例如桌緣、斜面），沒有 rotation 資料時維持單位四元數
 // （對應 reticle/reticlePlane 幾何原本 rotateX(-90°) 烘焙的水平朝向，向下相容舊行為）
 const reticleSmoothedQuat = new THREE.Quaternion();
 let reticleStable = false;
-let reticleHasSample = false;
 let reticleUnstableStreak = 0;
 
 function resetReticleStability() {
   reticleHistory.length = 0;
   reticleStable = false;
-  reticleHasSample = false;
   reticleUnstableStreak = 0;
+  reticlePosFilter.reset();
+  reticleRotFilter.reset();
 }
 
 // 搖桿可移動的範圍（世界座標單位）
@@ -2090,8 +2181,11 @@ const _startXR = () => {
     onUpdate: ({ processCpuResult }) => {
       if (!processCpuResult.reality) return;
       const { rotation: r, position: p, intrinsics } = processCpuResult.reality;
-      camera.position.set(p.x, p.y, p.z);
-      camera.quaternion.set(r.x, r.y, r.z, r.w);
+      const _t = performance.now() / 1000;
+      _rawCamPos.set(p.x, p.y, p.z);
+      _rawCamQuat.set(r.x, r.y, r.z, r.w);
+      camera.position.copy(cameraPosFilter.filter(_rawCamPos, _t));
+      camera.quaternion.copy(cameraQuatFilter.filter(_rawCamQuat, _t));
       if (intrinsics) {
         camera.projectionMatrix.fromArray(intrinsics);
         camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
@@ -2102,13 +2196,11 @@ const _startXR = () => {
         if (_ch && _ch.length > 0) {
           const hp = _ch[0].position;
           const hr = _ch[0].rotation; // 命中表面法向量對應的四元數，貼平面/桌緣等非水平表面時會跟著傾斜
-          if (!reticleHasSample) {
-            reticleSmoothed.set(hp.x, hp.y, hp.z); // 第一筆樣本直接對齊，避免從原點平滑過來
-            if (hr) reticleSmoothedQuat.set(hr.x, hr.y, hr.z, hr.w);
-            reticleHasSample = true;
-          } else {
-            reticleSmoothed.lerp(new THREE.Vector3(hp.x, hp.y, hp.z), RETICLE_SMOOTH_ALPHA);
-            if (hr) reticleSmoothedQuat.slerp(new THREE.Quaternion(hr.x, hr.y, hr.z, hr.w), RETICLE_SMOOTH_ALPHA);
+          _hitPosTmp.set(hp.x, hp.y, hp.z);
+          reticlePosFilter.filter(_hitPosTmp, _t, reticleSmoothed); // 第一筆樣本濾波器會直接對齊，不會從原點平滑過來
+          if (hr) {
+            _hitRotTmp.set(hr.x, hr.y, hr.z, hr.w);
+            reticleRotFilter.filter(_hitRotTmp, _t, reticleSmoothedQuat);
           }
           reticle.position.copy(reticleSmoothed);
           reticle.quaternion.copy(reticleSmoothedQuat);
