@@ -1571,8 +1571,14 @@ class QuaternionOneEuroFilter {
 
 // camera pose 濾波：修正「鏡頭移動時直升機微幅亂飄」——原本每幀直接套用 SLAM 原始 pose，
 // 追蹤雜訊會直接反映成畫面抖動。數值是初始估計，待實機微調。
-const cameraPosFilter = new Vector3OneEuroFilter(0.8, 0.3);
-const cameraQuatFilter = new QuaternionOneEuroFilter(0.8, 0.4);
+// beta 要夠大：走動/轉身時的速度遠高於手震雜訊的速度，beta 太小時濾波器對走動這種
+// 大範圍位移也一併重濾，會造成畫面上的直升機持續「追不上」真實鏡頭位置，走越快看起來
+// 偏移越大。實機測試：調大 beta 後，快速走動時的視覺滯後感確實改善，但走一段距離
+// 再停下來，直升機仍對不回原本的位置——代表這不只是濾波滯後，是單眼 SLAM 本身
+// 的累積漂移（camera pose 追蹤誤差），濾波只能壓高頻抖動，無法修正這種低頻誤差，
+// 需要靠其他手段（例如重新定位 UI）處理。
+const cameraPosFilter = new Vector3OneEuroFilter(0.8, 4.0);
+const cameraQuatFilter = new QuaternionOneEuroFilter(0.8, 3.0);
 const _rawCamPos = new THREE.Vector3();
 const _rawCamQuat = new THREE.Quaternion();
 
