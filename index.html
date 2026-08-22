@@ -372,14 +372,14 @@
     </div>
     <div class="qa-row">
       <label for="chopper-y">上下定位</label>
-      <input type="range" id="chopper-y" min="-20" max="20" step="0.01" value="-1.33">
-      <span id="chopper-y-val">-1.33</span>
+      <input type="range" id="chopper-y" min="-20" max="20" step="0.01" value="-2.08">
+      <span id="chopper-y-val">-2.08</span>
       <input type="number" class="cam-max hidden" id="chopper-y-max" value="20" step="1">
     </div>
     <div class="qa-row">
       <label for="chopper-scale">縮放</label>
-      <input type="range" id="chopper-scale" min="0.1" max="5" step="0.05" value="1.25">
-      <span id="chopper-scale-val">1.25</span>
+      <input type="range" id="chopper-scale" min="0.1" max="5" step="0.05" value="1.05">
+      <span id="chopper-scale-val">1.05</span>
       <input type="number" class="cam-max hidden" id="chopper-scale-max" value="5" step="1">
     </div>
     <div class="qa-row">
@@ -514,8 +514,8 @@
       </div>
       <div class="cam-row">
         <label for="ar-reticle-r">AR定位圈/機身縮放比例</label>
-        <input type="range" id="ar-reticle-r" min="0.3" max="3" step="0.01" value="1.11">
-        <span id="ar-reticle-r-val">1.11</span>
+        <input type="range" id="ar-reticle-r" min="0.05" max="3" step="0.01" value="0.14">
+        <span id="ar-reticle-r-val">0.14</span>
         <input type="number" class="cam-max" id="ar-reticle-r-max" value="3" step="0.5">
       </div>
       <div class="cam-row">
@@ -782,12 +782,13 @@ function loadArCalibration() {
   return null;
 }
 const savedArCalibration = loadArCalibration();
-// AR 模式進場時直升機縮放的預設值：有已儲存的校準值就用它，否則沿用原本手測出來的 0.135
-// （2.6 * 0.135 ≈ 0.35m，桌上玩具尺寸感，見 _startXR）
-window.AR_DEFAULT_SCALE = savedArCalibration ? savedArCalibration.scale : 0.135;
+// AR 模式進場時直升機縮放的預設值：有已儲存的校準值就用它，否則沿用實機測試調出來的 1.05
+// （模型包圍盒不規則，縮放倍率跟實際公尺數並非單純線性換算，這個數字是直接在裝置上試出來的，
+// 見 _startXR）
+window.AR_DEFAULT_SCALE = savedArCalibration ? savedArCalibration.scale : 1.05;
 
 // ── 直升機模型縮放（即時調整）────────────────────────────
-window.chopperDebug = { scale: 1.25 };
+window.chopperDebug = { scale: 1.05 };
 {
   const input = document.getElementById('chopper-scale');
   const val   = document.getElementById('chopper-scale-val');
@@ -846,8 +847,10 @@ window.chopperDebug = { scale: 1.25 };
 // 這樣拖動「縮放」滑桿時圈圈會跟著等比例放大縮小，不用兩邊分開對。比例常數本身仍可在
 // 偵錯面板微調，因為模型包圍盒推算出來的佔地半徑跟實機看到的視覺大小對不太起來
 // （模型本身形狀不規則、包圍盒本來就只是粗略估計）。
-// 預設值：有已儲存的校準值就用它，否則沿用原本手測出來的 0.15m／0.135 縮放這組數字。
-const RETICLE_RADIUS_RATIO_DEFAULT = savedArCalibration ? savedArCalibration.ratio : 0.15 / 0.135;
+// 預設值：有已儲存的校準值就用它，否則沿用「目標定位圈半徑 0.15m」換算到新縮放基準
+// （1.05）的比例——這個 0.15m 目標本身還沒有實機驗證過圈圈跟機身是否真的貼合，
+// 如果實測發現落差，請在 AR 中用「儲存目前縮放為預設」重新校準，會直接蓋掉這個預設。
+const RETICLE_RADIUS_RATIO_DEFAULT = savedArCalibration ? savedArCalibration.ratio : 0.15 / 1.05;
 window.arReticleRadiusDebug = { ratio: RETICLE_RADIUS_RATIO_DEFAULT };
 {
   const input = document.getElementById('ar-reticle-r');
@@ -869,7 +872,7 @@ window.arReticleRadiusDebug = { ratio: RETICLE_RADIUS_RATIO_DEFAULT };
 }
 
 // ── 直升機初始位置（即時調整，疊加在搖桿移動範圍之外）──────
-window.chopperPosDebug = { x: 0, y: -1.33, z: -3 };
+window.chopperPosDebug = { x: 0, y: -2.08, z: -3 };
 [
   ['chopper-x', 'x'],
   ['chopper-y', 'y'],
@@ -1577,9 +1580,10 @@ const movePos = new THREE.Vector3(0, 0, 0); // 飛行範圍內的相對位置（
 
 const MAX_SPEED  = 1.0;  // 最大移動速度（單位／秒，搖桿水平移動用；以下方 SPEED_SCALE_REF 對應的機身縮放為基準調校）
 const ACCEL      = 10;   // 推搖桿時的加速反應速度（時間常數，不隨機身縮放調整）
-// 上面這些移動速度常數是在「飛機縮放」偵錯滑桿預設值 1.2 下調校出來的手感；AR 模式會把
-// chopperDebug.scale 縮到 0.135（桌上玩具尺寸），如果移動速度不跟著等比例縮小，縮小後的機身
-// 相對自己的體型會飛得快非常多（同樣 1 單位/秒，體長縮小 9 倍等於相對體長的速度快了 9 倍）。
+// 上面這些移動速度常數是在「飛機縮放」偵錯滑桿預設值 1.2 下調校出來的手感；只要機身縮放
+// （chopperDebug.scale，例如進 AR 後改用的 window.AR_DEFAULT_SCALE）跟這個基準不同，
+// 若移動速度不跟著等比例縮小，縮小後的機身相對自己的體型會飛得快很多（同樣 1 單位/秒，
+// 體長縮小 N 倍等於相對體長的速度快了 N 倍）。
 // moveSpeedScale 把速度換算成跟機身目前實際縮放同比例，讓「每秒飛幾個機身長度」維持一致。
 const SPEED_SCALE_REF = 1.2; // 上面速度常數調校時對應的 chopperDebug.scale 基準值
 const DAMPING    = 3;    // 放開搖桿後的減速阻尼（越大停得越快）
@@ -2049,13 +2053,13 @@ function animate() {
 const _startXR = () => {
   window._xrActive = true;
   document.getElementById('camera-bg').style.display = 'none';
-  // AR 模式縮小直升機：預設落在真實世界約 35 公分左右的桌上玩具尺寸感（若使用者用「儲存
-  // 目前縮放為預設」校準過，這裡改用 window.AR_DEFAULT_SCALE 讀到的已儲存值，見上方
-  // loadArCalibration）。模型最長邊已由 chopperBaseScale 正規化成 2.6 個世界單位，AR 世界
-  // 單位＝實際公尺數，地板定位圈（見 updateReticleFootprint）會跟著等比例縮放。
-  // 用 setChopperScale 而不是直接寫 window.chopperDebug.scale，讓常駐面板的「縮放」滑桿
-  // 顯示值同步更新，不會出現滑桿畫面停在舊數字、但實際套用的是這裡蓋掉的新值的情況。
-  window.setChopperScale(window.AR_DEFAULT_SCALE); // 未校準時 2.6 * 0.135 ≈ 0.35m
+  // AR 模式套用直升機縮放預設值：未校準時用實機測試調出來的 1.05（見上方 window.AR_DEFAULT_SCALE
+  // 與 loadArCalibration），若使用者用「儲存目前縮放為預設」校準過，改用已儲存值。
+  // 模型包圍盒不規則（旋翼／機尾伸出去的部分），縮放倍率跟實際公尺數並非單純線性換算，
+  // 這個預設值是直接在裝置上比對出來的，不是公式推算的。地板定位圈（見 updateReticleFootprint）
+  // 會跟著等比例縮放。用 setChopperScale 而不是直接寫 window.chopperDebug.scale，讓常駐面板的
+  // 「縮放」滑桿顯示值同步更新，不會出現滑桿畫面停在舊數字、但實際套用的是這裡蓋掉的新值的情況。
+  window.setChopperScale(window.AR_DEFAULT_SCALE);
 
   // 「請對準地板，點按螢幕放置」的提示已併入姿態引導遮罩的文字（見 updateOrientGuide），
   // 角度符合後會自動切換顯示，不再另外疊加一個獨立的提示泡泡
