@@ -373,6 +373,9 @@
 <!-- 暫時性除錯用：WebXR hit-test 每幀結果數量，尚未放置時顯示，確認地板/平面掃描到了沒 -->
 <div id="webxr-hit-debug" class="hidden" style="position:fixed;top:calc(env(safe-area-inset-top,0px) + 56px);left:50%;transform:translateX(-50%);z-index:9998;background:rgba(0,0,0,0.6);color:#4dd9f0;font-size:12px;padding:4px 10px;border-radius:8px;pointer-events:none;"></div>
 
+<!-- 目前用哪個 AR 後端（8th Wall／WebXR／桌機），見 setArBackendBadge()，任何模式下都會顯示 -->
+<div id="ar-backend-badge" class="hidden" style="position:fixed;top:calc(env(safe-area-inset-top,0px) + 10px);left:50%;transform:translateX(-50%);z-index:9997;background:rgba(0,0,0,0.65);color:#facc15;font-size:11px;font-weight:600;padding:3px 10px;border-radius:999px;pointer-events:none;letter-spacing:0.02em;"></div>
+
 <!-- 畫面2：即時顯示 -->
 <div id="screen-live">
   <button id="orient-btn">切換橫式</button>
@@ -2345,10 +2348,21 @@ function animate() {
   }
   renderer.render(scene, camera);
 }
+
+// 畫面上常駐顯示目前用哪個 AR 後端，方便實機測試時一眼確認（尤其是 WebXR 備援失敗、
+// 自動退回 8th Wall 的情況，光看畫面效果不一定分得出來）
+function setArBackendBadge(text) {
+  const el = document.getElementById('ar-backend-badge');
+  if (!text) { el.classList.add('hidden'); return; }
+  el.textContent = text;
+  el.classList.remove('hidden');
+}
+
 // ── 8thWall AR Pipeline ──────────────────────────────────────
 const _startXR = () => {
   window._xrActive = true;
   window._arBackend = '8thwall';
+  setArBackendBadge('AR 後端：8th Wall（SLAM）');
   document.getElementById('camera-bg').style.display = 'none';
   // AR 模式套用直升機縮放預設值：未校準時用實機測試調出來的 1.05（見上方 window.AR_DEFAULT_SCALE
   // 與 loadArCalibration），若使用者用「儲存目前縮放為預設」校準過，改用已儲存值。
@@ -2432,6 +2446,7 @@ let webxrHitTestSource = null;
 const _startWebXR = async (session) => {
   window._xrActive = true;
   window._arBackend = 'webxr';
+  setArBackendBadge('AR 後端：WebXR（ARCore）');
   document.getElementById('camera-bg').style.display = 'none';
   window.setChopperScale(window.AR_DEFAULT_SCALE);
   // 拿掉 body／#three-wrap 的不透明底色，見上方 CSS .webxr-presenting 規則的說明
@@ -2474,6 +2489,7 @@ const _startWebXR = async (session) => {
     renderer.setAnimationLoop(null);
     document.body.classList.remove('webxr-presenting'); // 還原 body／#three-wrap 的深色底
     document.getElementById('webxr-hit-debug').classList.add('hidden');
+    setArBackendBadge(null);
     // 還原被 fixDomOverlayViewport 強制蓋掉的高度，回到原本 CSS 的 100dvh 規則
     document.documentElement.style.removeProperty('height');
     document.body.style.removeProperty('height');
@@ -2518,6 +2534,7 @@ const _startFallback = () => {
         // 非 AR 模式沒有「點按放置」流程，直接顯示機身
         chopperShouldBeVisible = true;
         applyChopperVisibility();
+        setArBackendBadge('AR 後端：無（桌機測試模式）');
         // 桌機測試沒有相機/姿態感測器可用，姿態引導遮罩會因為角度永遠不符合而卡住畫面，
         // 這裡直接視同「定位已完成」跳過引導，停在可操作的畫面上
         window.arPlaced = true;
