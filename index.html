@@ -357,6 +357,13 @@
   <p id="perm-err" style="color:#ef4444;margin-top:12px;"></p>
 </div>
 
+<!-- WebXR AR 進場提示（實驗性備援路徑）：requestSession('immersive-ar') 依規範需要真正的
+     使用者手勢才能呼叫，無法像 8th Wall 一樣無感自動啟動，偵測到裝置支援時才會顯示；
+     不支援的裝置（iOS／非 ARCore Android／桌機）完全不會看到這層，維持原本無感啟動流程 -->
+<div id="webxr-enter-overlay" class="hidden" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);color:#fff;font-size:18px;line-height:1.6;text-align:center;padding:24px;">
+  點一下畫面進入 AR<br><span style="font-size:13px;opacity:0.75;">（WebXR 測試路徑，失敗會自動改用原本的 AR 模式）</span>
+</div>
+
 <!-- 畫面2：即時顯示 -->
 <div id="screen-live">
   <button id="orient-btn">切換橫式</button>
@@ -1231,6 +1238,10 @@ function updateOrientGuide() {
 async function startCameraBackground() {
   // 8thWall AR 模式接管鏡頭時跳過 getUserMedia
   if (window.XR8) return;
+  // 裝置支援 WebXR immersive-ar 時，鏡頭透視改由系統合成器接管（見 _startWebXR），
+  // 這裡先跳過避免兩邊同時搶後鏡頭；若之後 WebXR session 實際建立失敗，
+  // 下方 requestSession 的 catch 會補呼叫一次這個函式
+  if (navigator.xr && await navigator.xr.isSessionSupported('immersive-ar').catch(() => false)) return;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' } },
@@ -1511,6 +1522,7 @@ camera.lookAt(0, 0, 0);
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.autoClear = false; // 8thWall AR 模式：防止每幀自動清除 GL 緩衝（會蓋掉相機畫面）
+renderer.xr.enabled = true; // WebXR（實驗性 AR 備援路徑，見下方 _startWebXR）；未進入 XR session 時不影響原本渲染
 wrap.appendChild(renderer.domElement);
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.7));
@@ -1712,6 +1724,119 @@ function resetReticleStability() {
   reticleUnstableStreak = 0;
   reticlePosFilter.reset();
   reticleRotFilter.reset();
+}
+
+// 地板命中結果 → reticle 平滑／穩定度判斷，8th Wall 與 WebXR 兩種 AR 後端共用同一套邏輯，
+// 差別只在誰負責算出 hp（命中座標）／hr（命中法向量四元數）：
+// 8th Wall 用 XR8.XrController.hitTest() 的單點命中；WebXR 用 XRHitTestSource 的 pose。
+// hp 為 null 代表本幀沒有命中（畫面上暫時看不到可放置的地板）。
+function updateReticleFromHit(hp, hr, t) {
+  if (!hp) {
+    reticle.visible = false;
+    reticlePlane.visible = false;
+    resetReticleStability();
+    return;
+  }
+  _hitPosTmp.set(hp.x, hp.y, hp.z);
+  reticlePosFilter.filter(_hitPosTmp, t, reticleSmoothed); // 第一筆樣本濾波器會直接對齊，不會從原點平滑過來
+  if (hr) {
+    _hitRotTmp.set(hr.x, hr.y, hr.z, hr.w);
+    reticleRotFilter.filter(_hitRotTmp, t, reticleSmoothedQuat);
+  }
+  reticle.position.copy(reticleSmoothed);
+  reticle.quaternion.copy(reticleSmoothedQuat);
+  reticle.visible = true;
+  reticlePlane.position.copy(reticleSmoothed);
+  reticlePlane.quaternion.copy(reticleSmoothedQuat);
+  reticlePlane.visible = true;
+
+  // 遠距離時單眼 SLAM／WebXR 深度估計雜訊較大，需連續 N 幀的偵測結果都落在容許誤差內
+  // 才視為穩定，避免瞬間雜訊造成放置高度偏差（懸空／陷地）；改用平滑後的位置
+  // （reticleSmoothed）取樣，比直接用單幀原始 hp 雜訊小很多，變綠後也比較不會抖動
+  reticleHistory.push(reticleSmoothed.clone());
+  if (reticleHistory.length > RETICLE_STABLE_FRAMES) reticleHistory.shift();
+  if (reticleHistory.length === RETICLE_STABLE_FRAMES) {
+    const avg = new THREE.Vector3();
+    reticleHistory.forEach(v => avg.add(v));
+    avg.multiplyScalar(1 / reticleHistory.length);
+    let maxDev = 0;
+    reticleHistory.forEach(v => { maxDev = Math.max(maxDev, v.distanceTo(avg)); });
+    if (!reticleStable) {
+      reticleStable = maxDev < RETICLE_STABLE_TOL;
+      reticleUnstableStreak = 0;
+    } else if (maxDev < RETICLE_STABLE_TOL_EXIT) {
+      reticleUnstableStreak = 0;
+    } else if (++reticleUnstableStreak >= RETICLE_UNSTABLE_GRACE) {
+      reticleStable = false;
+      reticleUnstableStreak = 0;
+    }
+  } else {
+    reticleStable = false;
+    reticleUnstableStreak = 0;
+  }
+  reticleMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
+  reticlePlaneFillMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
+  reticleGridHelper.material.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
+}
+
+// 放置（點按地板）／長按重置：8th Wall、WebXR 兩種 AR 後端共用同一套流程，
+// 只依賴 renderer.domElement 的觸控事件與上面 updateReticleFromHit 算出的 reticle 狀態，
+// 不參考任何後端專屬的 API，因此可以直接共用，只呼叫一次避免重複綁定事件。
+let _placementHandlersAttached = false;
+function attachPlacementHandlers() {
+  if (_placementHandlersAttached) return;
+  _placementHandlersAttached = true;
+
+  // 點按螢幕 → 放置直升機到 reticle 位置（reticle 由 onUpdate 即時更新）
+  // 需同時滿足：地板已偵測到（reticle 可見）＋ 偵測結果已連續多幀穩定＋手機角度已符合姿態引導的要求
+  renderer.domElement.addEventListener('touchend', (e) => {
+    // 避免觸碰搖桿區域時也觸發（搖桿在右下，reticle 需可見才放置）
+    if (reticle.visible && reticleStable && !arPlaced && window.orientGuideOk) {
+      arAnchorPos.copy(reticleSmoothed);
+      // 只加一個貼地用的極小偏移（避免完全貼合地板造成 z-fighting），不扣掉 chopperPosDebug.y：
+      // corePos 每幀都是 arAnchorPos + movePos + chopperPosDebug（見下方 animate() 內的 corePos.set），
+      // X／Z 兩軸從來不會在這裡被扣掉自己、Y 軸原本卻會被扣掉一次，導致「上下定位」在放置當下
+      // 的效果永遠被自己抵銷成固定值，改滑桿預設值對放置瞬間的高度完全沒有作用，只有放置後
+      // 再手動調整（跟放置當下的值產生差值）才看得出效果。拿掉這個抵銷，讓 Y 跟 X／Z 一致，
+      // chopperPosDebug.y 才會是「相對偵測到的地板，永遠有效」的絕對高度偏移。
+      arAnchorPos.y += 0.001;
+      // 放置前機身完全靜止（見 animate() 內的 arPlaced 判斷式），這裡仍重置一次移動狀態，
+      // 避免長按重置後重新放置時，殘留前一次飛行的位置／速度造成新錨點對不準 reticle
+      movePos.set(0, 0, 0);
+      velocity.set(0, 0, 0);
+      chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
+      recoilOffsetY = 0;
+      recoilVelY = 0;
+      prevVelYPos = 0;
+      pitchRecoilOffset = 0;
+      pitchRecoilVel = 0;
+      hasStartedMoving = false;
+      arPlaced = true;
+      window.arPlaced = true;
+      chopperShouldBeVisible = true;
+      applyChopperVisibility();
+      // 記錄放置那一刻的定位圈實際半徑，供「儲存目前縮放為預設」反推縮放／定位圈比例用
+      window.lastPlacedReticleRadius = reticle.scale.x;
+      reticle.visible = false;
+      reticlePlane.visible = false;
+      // 放置成功震動確認（僅 Android Chrome 支援，iOS Safari 無此 API 時靜默略過）
+      if ('vibrate' in navigator) navigator.vibrate([15, 30, 15, 30, 80]);
+    }
+  });
+
+  // 長按 2 秒 → 重置放置位置
+  let _holdTimer = null;
+  renderer.domElement.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    _holdTimer = setTimeout(() => {
+      arPlaced = false;
+      window.arPlaced = false;
+      chopperShouldBeVisible = false;
+      applyChopperVisibility();
+      resetReticleStability();
+    }, 2000);
+  }, { passive: false });
+  renderer.domElement.addEventListener('touchend', () => clearTimeout(_holdTimer));
 }
 
 // 搖桿可移動的範圍（世界座標單位）
@@ -2197,8 +2322,11 @@ function animate() {
       }
     }
   }
-  // AR 模式：只清 depth buffer，保留 8thWall 畫好的相機畫面；非 AR 全清
-  if (window._xrActive) {
+  // 8th Wall：只清 depth buffer，保留它自己畫好的相機畫面到 WebGL color buffer 裡。
+  // WebXR／非 AR：canvas 本身沒有先被畫上相機畫面（WebXR 的鏡頭透視是系統合成器讀 canvas
+  // alpha 通道做的，不經過這個 color buffer），所以要跟非 AR 模式一樣每幀全清，
+  // 否則直升機會有殘影，且清成透明色（alpha=0）系統才看得到後面真正的鏡頭畫面。
+  if (window._arBackend === '8thwall') {
     renderer.clearDepth();
   } else {
     renderer.clear();
@@ -2208,6 +2336,7 @@ function animate() {
 // ── 8thWall AR Pipeline ──────────────────────────────────────
 const _startXR = () => {
   window._xrActive = true;
+  window._arBackend = '8thwall';
   document.getElementById('camera-bg').style.display = 'none';
   // AR 模式套用直升機縮放預設值：未校準時用實機測試調出來的 1.05（見上方 window.AR_DEFAULT_SCALE
   // 與 loadArCalibration），若使用者用「儲存目前縮放為預設」校準過，改用已儲存值。
@@ -2260,54 +2389,10 @@ const _startXR = () => {
       // 注入的錯誤位移，不試圖再事後校正。）
       if (!arPlaced) {
         const _ch = XR8.XrController.hitTest(0.5, 0.5, { DETECTED_SURFACE: true });
-        if (_ch && _ch.length > 0) {
-          const hp = _ch[0].position;
-          const hr = _ch[0].rotation; // 命中表面法向量對應的四元數，貼平面/桌緣等非水平表面時會跟著傾斜
-          _hitPosTmp.set(hp.x, hp.y, hp.z);
-          reticlePosFilter.filter(_hitPosTmp, _t, reticleSmoothed); // 第一筆樣本濾波器會直接對齊，不會從原點平滑過來
-          if (hr) {
-            _hitRotTmp.set(hr.x, hr.y, hr.z, hr.w);
-            reticleRotFilter.filter(_hitRotTmp, _t, reticleSmoothedQuat);
-          }
-          reticle.position.copy(reticleSmoothed);
-          reticle.quaternion.copy(reticleSmoothedQuat);
-          reticle.visible = true;
-          reticlePlane.position.copy(reticleSmoothed);
-          reticlePlane.quaternion.copy(reticleSmoothedQuat);
-          reticlePlane.visible = true;
-
-          // 遠距離時單眼 SLAM 的深度估計雜訊較大，需連續 N 幀的偵測結果都落在容許誤差內
-          // 才視為穩定，避免瞬間雜訊造成放置高度偏差（懸空／陷地）；改用平滑後的位置
-          // （reticleSmoothed）取樣，比直接用單幀原始 hp 雜訊小很多，變綠後也比較不會抖動
-          reticleHistory.push(reticleSmoothed.clone());
-          if (reticleHistory.length > RETICLE_STABLE_FRAMES) reticleHistory.shift();
-          if (reticleHistory.length === RETICLE_STABLE_FRAMES) {
-            const avg = new THREE.Vector3();
-            reticleHistory.forEach(v => avg.add(v));
-            avg.multiplyScalar(1 / reticleHistory.length);
-            let maxDev = 0;
-            reticleHistory.forEach(v => { maxDev = Math.max(maxDev, v.distanceTo(avg)); });
-            if (!reticleStable) {
-              reticleStable = maxDev < RETICLE_STABLE_TOL;
-              reticleUnstableStreak = 0;
-            } else if (maxDev < RETICLE_STABLE_TOL_EXIT) {
-              reticleUnstableStreak = 0;
-            } else if (++reticleUnstableStreak >= RETICLE_UNSTABLE_GRACE) {
-              reticleStable = false;
-              reticleUnstableStreak = 0;
-            }
-          } else {
-            reticleStable = false;
-            reticleUnstableStreak = 0;
-          }
-          reticleMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
-          reticlePlaneFillMat.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
-          reticleGridHelper.material.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
-        } else {
-          reticle.visible = false;
-          reticlePlane.visible = false;
-          resetReticleStability();
-        }
+        const _hit = _ch && _ch.length > 0 ? _ch[0] : null;
+        // 命中表面法向量對應的四元數，貼平面/桌緣等非水平表面時會跟著傾斜；
+        // 實際平滑／穩定度判斷與 WebXR 後端共用，見 updateReticleFromHit()
+        updateReticleFromHit(_hit ? _hit.position : null, _hit ? _hit.rotation : null, _t);
       }
     },
 
@@ -2315,56 +2400,7 @@ const _startXR = () => {
     onRender: () => { animate(); },
   };
 
-  // 點按螢幕 → 放置直升機到 reticle 位置（reticle 由 onUpdate 即時更新）
-  // 需同時滿足：地板已偵測到（reticle 可見）＋ 偵測結果已連續多幀穩定＋手機角度已符合姿態引導的要求
-  renderer.domElement.addEventListener('touchend', (e) => {
-    // 避免觸碰搖桿區域時也觸發（搖桿在右下，reticle 需可見才放置）
-    if (reticle.visible && reticleStable && !arPlaced && window.orientGuideOk) {
-      arAnchorPos.copy(reticleSmoothed);
-      // 只加一個貼地用的極小偏移（避免完全貼合地板造成 z-fighting），不扣掉 chopperPosDebug.y：
-      // corePos 每幀都是 arAnchorPos + movePos + chopperPosDebug（見下方 animate() 內的 corePos.set），
-      // X／Z 兩軸從來不會在這裡被扣掉自己、Y 軸原本卻會被扣掉一次，導致「上下定位」在放置當下
-      // 的效果永遠被自己抵銷成固定值，改滑桿預設值對放置瞬間的高度完全沒有作用，只有放置後
-      // 再手動調整（跟放置當下的值產生差值）才看得出效果。拿掉這個抵銷，讓 Y 跟 X／Z 一致，
-      // chopperPosDebug.y 才會是「相對偵測到的地板，永遠有效」的絕對高度偏移。
-      arAnchorPos.y += 0.001;
-      // 放置前機身完全靜止（見 animate() 內的 arPlaced 判斷式），這裡仍重置一次移動狀態，
-      // 避免長按重置後重新放置時，殘留前一次飛行的位置／速度造成新錨點對不準 reticle
-      movePos.set(0, 0, 0);
-      velocity.set(0, 0, 0);
-      chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
-      recoilOffsetY = 0;
-      recoilVelY = 0;
-      prevVelYPos = 0;
-      pitchRecoilOffset = 0;
-      pitchRecoilVel = 0;
-      hasStartedMoving = false;
-      arPlaced = true;
-      window.arPlaced = true;
-      chopperShouldBeVisible = true;
-      applyChopperVisibility();
-      // 記錄放置那一刻的定位圈實際半徑，供「儲存目前縮放為預設」反推縮放／定位圈比例用
-      window.lastPlacedReticleRadius = reticle.scale.x;
-      reticle.visible = false;
-      reticlePlane.visible = false;
-      // 放置成功震動確認（僅 Android Chrome 支援，iOS Safari 無此 API 時靜默略過）
-      if ('vibrate' in navigator) navigator.vibrate([15, 30, 15, 30, 80]);
-    }
-  });
-
-  // 長按 2 秒 → 重置放置位置
-  let _holdTimer = null;
-  renderer.domElement.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    _holdTimer = setTimeout(() => {
-      arPlaced = false;
-      window.arPlaced = false;
-      chopperShouldBeVisible = false;
-      applyChopperVisibility();
-      resetReticleStability();
-    }, 2000);
-  }, { passive: false });
-  renderer.domElement.addEventListener('touchend', () => clearTimeout(_holdTimer));
+  attachPlacementHandlers();
 
   XR8.addCameraPipelineModules([
     XR8.GlTextureRenderer.pipelineModule(), // 渲染相機畫面到背景
@@ -2375,31 +2411,108 @@ const _startXR = () => {
   XR8.run({ canvas: renderer.domElement });
 };
 
+// ── WebXR AR Pipeline（實驗性備援路徑：僅 Android Chrome + ARCore 支援 hit-test）──
+// 跟 8th Wall 最大的差異：相機 pose 不用自己濾波／校正，renderer.xr 在 renderer.render()
+// 內部每幀直接覆寫 camera 的 position/quaternion/projectionMatrix，數值來自 ARCore 原生的
+// 相機＋IMU 融合結果，理論上不會有 8th Wall 那種純視覺單眼 SLAM 的轉動-位移混淆漂移
+// （見 design.md 第四節、記憶庫 project-webxr-alternative-evaluation）。
+let webxrHitTestSource = null;
+const _startWebXR = async (session) => {
+  window._xrActive = true;
+  window._arBackend = 'webxr';
+  document.getElementById('camera-bg').style.display = 'none';
+  window.setChopperScale(window.AR_DEFAULT_SCALE);
+
+  renderer.xr.setReferenceSpaceType('local');
+  await renderer.xr.setSession(session);
+
+  const viewerSpace = await session.requestReferenceSpace('viewer');
+  webxrHitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+
+  session.addEventListener('end', () => {
+    webxrHitTestSource = null;
+    window._xrActive = false;
+    window._arBackend = null;
+    renderer.setAnimationLoop(null);
+  });
+
+  attachPlacementHandlers();
+
+  // renderer.setAnimationLoop 取代原本的 requestAnimationFrame 迴圈：XR session 進行中，
+  // three.js 會在每幀呼叫這個 callback 並帶入當幀的 XRFrame，session 結束後（frame 為
+  // undefined／null）也還是會繼續呼叫，等同一般 rAF 迴圈，不需要另外處理「結束後怎麼辦」。
+  renderer.setAnimationLoop((timestamp, frame) => {
+    if (frame && !arPlaced) {
+      const refSpace = renderer.xr.getReferenceSpace();
+      const results = webxrHitTestSource ? frame.getHitTestResults(webxrHitTestSource) : [];
+      const pose = results.length > 0 ? results[0].getPose(refSpace) : null;
+      updateReticleFromHit(
+        pose ? pose.transform.position : null,
+        pose ? pose.transform.orientation : null,
+        performance.now() / 1000
+      );
+    }
+    animate();
+  });
+};
+
 // 8thWall 已載入 → 直接啟動；否則等待 xrloaded 事件
 // Fallback：3 秒後仍未啟動 AR（桌機/網路問題）→ 維持原有動畫迴圈
-if (window.XR8) {
-  _startXR();
-} else {
-  window.addEventListener('xrloaded', _startXR);
-  setTimeout(() => {
-    if (!window._xrActive) {
-      // 非 AR 模式沒有「點按放置」流程，直接顯示機身
-      chopperShouldBeVisible = true;
-      applyChopperVisibility();
-      // 桌機測試沒有相機/姿態感測器可用，姿態引導遮罩會因為角度永遠不符合而卡住畫面，
-      // 這裡直接視同「定位已完成」跳過引導，停在可操作的畫面上
-      window.arPlaced = true;
-      window.orientGuideOk = true;
-      document.getElementById('orient-guide').classList.add('hidden-guide');
-      // 顯示綠色定位點標記，並停用放開按鈕後的自動下沉（定高懸停在標記正上方）
-      window._holdAltitude = true;
-      placementMarker.visible = true;
-      requestAnimationFrame(function _fallbackLoop() {
-        animate();
-        requestAnimationFrame(_fallbackLoop);
+const _startFallback = () => {
+  if (window.XR8) {
+    _startXR();
+  } else {
+    window.addEventListener('xrloaded', _startXR);
+    setTimeout(() => {
+      if (!window._xrActive) {
+        // 非 AR 模式沒有「點按放置」流程，直接顯示機身
+        chopperShouldBeVisible = true;
+        applyChopperVisibility();
+        // 桌機測試沒有相機/姿態感測器可用，姿態引導遮罩會因為角度永遠不符合而卡住畫面，
+        // 這裡直接視同「定位已完成」跳過引導，停在可操作的畫面上
+        window.arPlaced = true;
+        window.orientGuideOk = true;
+        document.getElementById('orient-guide').classList.add('hidden-guide');
+        // 顯示綠色定位點標記，並停用放開按鈕後的自動下沉（定高懸停在標記正上方）
+        window._holdAltitude = true;
+        placementMarker.visible = true;
+        requestAnimationFrame(function _fallbackLoop() {
+          animate();
+          requestAnimationFrame(_fallbackLoop);
+        });
+      }
+    }, 3000);
+  }
+};
+
+// AR 啟動策略：WebXR 優先（若裝置回報支援 immersive-ar），否則直接走原本的 8th Wall／桌機
+// 流程，不受任何影響。requestSession('immersive-ar') 依規範需要真正的使用者手勢才能呼叫
+// （瀏覽器的 transient activation 限制），沒辦法像 8th Wall 一樣在頁面載入時無感自動啟動，
+// 所以支援時會先跳出 #webxr-enter-overlay 請使用者點一下畫面；request 失敗（例如裝置回報
+// 支援 immersive-ar 但實際上這次沒有給 hit-test）一樣會自動退回 8th Wall／桌機模式。
+if (navigator.xr && navigator.xr.isSessionSupported) {
+  navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+    if (!supported) { _startFallback(); return; }
+    const overlay = document.getElementById('webxr-enter-overlay');
+    overlay.classList.remove('hidden');
+    overlay.addEventListener('click', function onTap() {
+      overlay.removeEventListener('click', onTap);
+      overlay.classList.add('hidden');
+      navigator.xr.requestSession('immersive-ar', {
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: ['dom-overlay'],
+        domOverlay: { root: document.body },
+      }).then((session) => {
+        _startWebXR(session);
+      }).catch((err) => {
+        console.warn('WebXR AR 啟動失敗，改用原本的 AR／桌機模式：', err.message);
+        startCameraBackground(); // 前面因為預期會用 WebXR 而跳過了 getUserMedia，失敗後要補回來
+        _startFallback();
       });
-    }
-  }, 3000);
+    }, { once: true });
+  }).catch(() => _startFallback());
+} else {
+  _startFallback();
 }
 </script>
 </body>
