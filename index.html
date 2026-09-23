@@ -2323,12 +2323,15 @@ function animate() {
     }
   }
   // 8th Wall：只清 depth buffer，保留它自己畫好的相機畫面到 WebGL color buffer 裡。
-  // WebXR／非 AR：canvas 本身沒有先被畫上相機畫面（WebXR 的鏡頭透視是系統合成器讀 canvas
-  // alpha 通道做的，不經過這個 color buffer），所以要跟非 AR 模式一樣每幀全清，
-  // 否則直升機會有殘影，且清成透明色（alpha=0）系統才看得到後面真正的鏡頭畫面。
+  // WebXR：renderer.autoClear 在 _startWebXR() 內已暫時開回 true，這裡不手動清——
+  // WebXR session 進行中，「真正會顯示出來」的 framebuffer 是 renderer.render() 內部
+  // 才會綁定的 XR framebuffer，不是這裡呼叫 clear() 當下綁定的預設 framebuffer，
+  // 手動清只會清到沒人看得見的那一份，autoClear=true 讓 render() 自己在正確的
+  // framebuffer 上清成透明色（alpha=0），系統合成器才看得到後面真正的鏡頭畫面。
+  // 非 AR（桌機）：沒有這個問題，維持原本手動 clear()。
   if (window._arBackend === '8thwall') {
     renderer.clearDepth();
-  } else {
+  } else if (window._arBackend !== 'webxr') {
     renderer.clear();
   }
   renderer.render(scene, camera);
@@ -2423,6 +2426,12 @@ const _startWebXR = async (session) => {
   document.getElementById('camera-bg').style.display = 'none';
   window.setChopperScale(window.AR_DEFAULT_SCALE);
 
+  // 全域的 renderer.autoClear = false 是為了 8th Wall（見該行註解）：手動 clear() 才不會
+  // 蓋掉它自己畫的相機畫面。WebXR 沒有這回事，而且 session 進行中 render() 才會綁定真正
+  // 的 XR framebuffer，開回 autoClear 讓 render() 自己在那個 framebuffer 上做清除
+  // （見下方 animate() 尾端的說明），不然畫面會維持系統預設的不透明黑色，看不到鏡頭透視。
+  renderer.autoClear = true;
+
   renderer.xr.setReferenceSpaceType('local');
   await renderer.xr.setSession(session);
 
@@ -2433,6 +2442,7 @@ const _startWebXR = async (session) => {
     webxrHitTestSource = null;
     window._xrActive = false;
     window._arBackend = null;
+    renderer.autoClear = false; // 還原給 8th Wall／桌機模式用的手動 clear 行為
     renderer.setAnimationLoop(null);
   });
 
