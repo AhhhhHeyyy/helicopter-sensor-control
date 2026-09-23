@@ -154,6 +154,17 @@
 - **`window._arBackend`**：新增旗標區分 `'8thwall'` / `'webxr'` / `null`，只用在渲染迴圈最後「清 buffer」的分支。其餘所有「是不是在 AR 模式」的判斷仍沿用原本的 `window._xrActive`（兩種後端都會設為 `true`），不用逐一改判斷式。
 - **必要的 `dom-overlay` 依賴**：`requestSession` 有帶 `optionalFeatures: ['dom-overlay']`，讓搖桿/按鈕/偵錯面板等既有 DOM UI 能疊在 WebXR 沉浸式畫面上（不然畫面會整個被系統接管，UI 全部消失）。Chrome for Android 對 dom-overlay 的支援度算普遍，但**這是實機測試時第一個要確認的點**：如果進入 AR 後操作 UI 整個不見，代表這支裝置的 Chrome 不支援 dom-overlay，這條路要重新設計 UI 呈現方式。
 - **已知未處理的邊界情況**：WebXR session 結束時（`session.addEventListener('end', ...)`）目前只是停止渲染迴圈，沒有接回桌機模式或提示重新整理，這是刻意先做最小可行版本，實測沒問題再補。
+
+### 6a. 目前暫時開啟的除錯覆寫（排查走動漂移問題用，記得之後評估要不要恢復）
+
+排查 WebXR 走動漂移問題期間，為了能反覆快速重新放置測試，暫時拿掉了「必須把手機轉成垂直角度才能放置」的限制。這是**兩處**改動，缺一不可（一開始只改了第一處，發現點擊還是沒反應，才發現第二處才是真正擋住點擊的地方）：
+
+1. **放置判斷式本身**（[index.html:1846](index.html#L1846)）：`attachPlacementHandlers()` 的 touchend 判斷式，`&& window.orientGuideOk` 被註解掉（`/* && window.orientGuideOk */`）。
+2. **姿態引導遮罩的點擊穿透**（[index.html:1220](index.html#L1220) 附近，`updateOrientGuide()` 內）：`#orient-guide` 這個 `position:fixed;inset:0` 的遮罩，原本只有角度符合（`ok`）時才會加上 `.clickthrough`（CSS 對應 `pointer-events:none`），角度沒對齊時會**真的擋住點擊事件**，點了畫面完全沒反應——這才是「網格圈圈都出現了、點了卻放不下去」的真正原因，跟放置判斷式邏輯本身無關。改成 `orientGuideEl.classList.add('clickthrough');` 讓遮罩永遠穿透點擊。
+
+視覺上藍色框線引導、震動回饋、文字提示都還在（沒有拿掉，只是不再擋放置），純粹是「現在網格一出現、不管手機角度多歪都能立刻點按放置」，方便測試漂移時不用一直把手機轉正。
+
+**要恢復限制**：兩處都要改回去——[index.html:1846](index.html#L1846) 拿掉註解、[index.html:1220](index.html#L1220) 附近改回 `orientGuideEl.classList.toggle('clickthrough', ok);`。
 - **⚠️ `renderer.autoClear` 陷阱**：全域的 `renderer.autoClear = false`（[index.html:1513](index.html#L1513)）是為了 8th Wall——它自己把相機畫面畫進 WebGL color buffer，若讓 `render()` 自動清除會蓋掉那張畫面，所以原本的做法是在 `render()` 之前手動呼叫 `clear()`/`clearDepth()`。這個手動 clear 對 WebXR 是錯的：WebXR session 進行中，`renderer.render()` 內部才會把 framebuffer 換綁到「真正會顯示給使用者看」的 XR framebuffer，在 `render()` 之前手動呼叫的 `clear()` 清的是還沒換綁、沒人看得到的預設 framebuffer。修法：`_startWebXR()` 內把 `renderer.autoClear` 暫時開回 `true`，讓 `render()` 自己在正確換綁後的 framebuffer 上清除，session 結束時要記得改回 `false`。**這個修法本身是對的（framebuffer 綁定時機的問題確實存在），但實機測試證實它不是唯一問題**，見下一條。
 - **⚠️ dom-overlay 不透明背景陷阱（實機測試踩過兩輪，2026-09-23）**：這才是「相機是黑的」真正的主因。`domOverlay: { root: document.body }` 讓 Chrome 把**整棵 DOM 樹**（不只是 `<canvas>` 本身）當成一張 2D 圖層疊在 AR 相機影像上面——只要任何一層祖先元素有不透明背景色，就會整片蓋住鏡頭透視，跟 canvas 本身透不透明、alpha 清得對不對完全無關。這個專案的 `body { background: #0f0f0f }` 與 `#three-wrap { background: #111 }`（原本是給 8th Wall／桌機模式用的深色底）正好符合這個條件。
   - 第一輪實機測試：當時 `#screen-live`／`#three-wrap` 的版面因為另一個 viewport 高度量測問題（見下一條）只佔了畫面上半部，所以只有「上半部」被這個不透明背景蓋住，下半部因為完全沒有 DOM 內容覆蓋，反而露出了沒被遮住的真實鏡頭畫面——當時誤判成「上半部還沒清乾淨」，其實是兩個問題疊在一起，恰好讓下半部看起來正常。

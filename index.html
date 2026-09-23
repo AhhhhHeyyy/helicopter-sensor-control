@@ -1218,7 +1218,12 @@ function updateOrientGuide() {
   const ok = errorMag <= ORIENT_GUIDE_TOL;
   window.orientGuideOk = ok;
   orientGuideEl.classList.toggle('ok', ok);
-  orientGuideEl.classList.toggle('clickthrough', ok);
+  // 暫時排查漂移問題期間：不管角度符不符合，遮罩一律穿透點擊（原本只有 ok 時才加
+  // clickthrough，角度沒對齊時這層 position:fixed;inset:0 的遮罩會真的擋住點擊事件，
+  // 導致點了畫面沒反應——這才是「網格出現了但點不了」的真正原因，不是放置判斷式本身
+  // （那邊的 window.orientGuideOk 檢查已經另外註解掉了，見 attachPlacementHandlers）。
+  // 要恢復限制：把這行改回 orientGuideEl.classList.toggle('clickthrough', ok); 就好。
+  orientGuideEl.classList.add('clickthrough');
   orientGuideLabel.classList.toggle('ok', ok);
   orientGuideLabel.textContent = ok
     ? (window._xrActive ? '角度符合，請對準地板並點按螢幕放置' : '角度符合，準備完成')
