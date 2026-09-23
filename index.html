@@ -370,6 +370,9 @@
   點一下畫面進入 AR<br><span style="font-size:13px;opacity:0.75;">（WebXR 測試路徑，失敗會自動改用原本的 AR 模式）</span>
 </div>
 
+<!-- 暫時性除錯用：WebXR hit-test 每幀結果數量，尚未放置時顯示，確認地板/平面掃描到了沒 -->
+<div id="webxr-hit-debug" class="hidden" style="position:fixed;top:calc(env(safe-area-inset-top,0px) + 56px);left:50%;transform:translateX(-50%);z-index:9998;background:rgba(0,0,0,0.6);color:#4dd9f0;font-size:12px;padding:4px 10px;border-radius:8px;pointer-events:none;"></div>
+
 <!-- 畫面2：即時顯示 -->
 <div id="screen-live">
   <button id="orient-btn">切換橫式</button>
@@ -2470,12 +2473,15 @@ const _startWebXR = async (session) => {
     renderer.autoClear = false; // 還原給 8th Wall／桌機模式用的手動 clear 行為
     renderer.setAnimationLoop(null);
     document.body.classList.remove('webxr-presenting'); // 還原 body／#three-wrap 的深色底
+    document.getElementById('webxr-hit-debug').classList.add('hidden');
     // 還原被 fixDomOverlayViewport 強制蓋掉的高度，回到原本 CSS 的 100dvh 規則
     document.documentElement.style.removeProperty('height');
     document.body.style.removeProperty('height');
   });
 
   attachPlacementHandlers();
+
+  const hitDebugEl = document.getElementById('webxr-hit-debug');
 
   // renderer.setAnimationLoop 取代原本的 requestAnimationFrame 迴圈：XR session 進行中，
   // three.js 會在每幀呼叫這個 callback 並帶入當幀的 XRFrame，session 結束後（frame 為
@@ -2490,6 +2496,11 @@ const _startWebXR = async (session) => {
         pose ? pose.transform.orientation : null,
         performance.now() / 1000
       );
+      // 暫時性除錯：確認 hit-test 本身有沒有在動，還是慢慢移動手機掃描還沒掃到平面
+      hitDebugEl.textContent = `hit-test 結果：${results.length}（移動手機慢慢掃描桌面/地板）`;
+      hitDebugEl.classList.remove('hidden');
+    } else {
+      hitDebugEl.classList.add('hidden');
     }
     animate();
   });
