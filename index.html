@@ -1200,6 +1200,12 @@ function updateOrientGuide() {
     orientGuideEl.classList.add('hidden-guide');
     return;
   }
+  // 暫時排查漂移問題期間：整個姿態引導遮罩（含「請將手機轉成垂直」文字）先藏起來——
+  // 點擊本來就已經不受角度限制了（見上面 attachPlacementHandlers／clickthrough 的註解），
+  // 但遮罩還在顯示這段文字會讓人誤以為角度依然卡著放置，乾脆連視覺提示一起藏掉。
+  // window.orientGuideOk 仍照常算、照常更新，只是不拿來顯示／擋東西了。
+  // 要恢復：刪掉這行 return 前的 orientGuideEl.classList.add('hidden-guide') 即可。
+  orientGuideEl.classList.add('hidden-guide');
   orientGuideEl.classList.remove('hidden-guide'); // 長按重置放置後（arPlaced 重新變 false）讓遮罩自動重新出現
 
   const isLandscapeNow = document.body.classList.contains('landscape');
