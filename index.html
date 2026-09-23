@@ -17,6 +17,12 @@
     --joy-size: min(220px, 28dvh, 58vw);
     --knob-size: min(82px, calc(var(--joy-size) * 0.375));
   }
+  /* WebXR dom-overlay 進行中：body／#three-wrap 平常的不透明底色會被 Chrome 當成一張蓋在
+     AR 相機影像上面的 2D 圖層整個擋住鏡頭透視（dom-overlay 的已知陷阱——整棵 DOM 樹的
+     背景色都算數，不是只有 <canvas> 本身透不透明），所以進 WebXR session 時（見 _startWebXR
+     內 document.body.classList.add('webxr-presenting')）強制改透明；session 結束後拿掉
+     class，恢復原本 8th Wall／桌機模式需要的深色底。 */
+  body.webxr-presenting, body.webxr-presenting #three-wrap { background: transparent !important; }
   #screen-permission, #screen-live { width: 100%; max-width: 360px; text-align: center; }
   #screen-permission { margin: auto 0; }
   /* 即時顯示畫面：相機/3D 視窗全螢幕，UI 搖桿以浮動層疊加在最上方 */
@@ -360,7 +366,7 @@
 <!-- WebXR AR 進場提示（實驗性備援路徑）：requestSession('immersive-ar') 依規範需要真正的
      使用者手勢才能呼叫，無法像 8th Wall 一樣無感自動啟動，偵測到裝置支援時才會顯示；
      不支援的裝置（iOS／非 ARCore Android／桌機）完全不會看到這層，維持原本無感啟動流程 -->
-<div id="webxr-enter-overlay" class="hidden" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);color:#fff;font-size:18px;line-height:1.6;text-align:center;padding:24px;">
+<div id="webxr-enter-overlay" class="hidden" style="position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(10,10,10,0.94);color:#fff;font-size:18px;line-height:1.6;text-align:center;padding:24px;">
   點一下畫面進入 AR<br><span style="font-size:13px;opacity:0.75;">（WebXR 測試路徑，失敗會自動改用原本的 AR 模式）</span>
 </div>
 
@@ -2425,6 +2431,8 @@ const _startWebXR = async (session) => {
   window._arBackend = 'webxr';
   document.getElementById('camera-bg').style.display = 'none';
   window.setChopperScale(window.AR_DEFAULT_SCALE);
+  // 拿掉 body／#three-wrap 的不透明底色，見上方 CSS .webxr-presenting 規則的說明
+  document.body.classList.add('webxr-presenting');
 
   // 全域的 renderer.autoClear = false 是為了 8th Wall（見該行註解）：手動 clear() 才不會
   // 蓋掉它自己畫的相機畫面。WebXR 沒有這回事，而且 session 進行中 render() 才會綁定真正
@@ -2461,6 +2469,7 @@ const _startWebXR = async (session) => {
     window._arBackend = null;
     renderer.autoClear = false; // 還原給 8th Wall／桌機模式用的手動 clear 行為
     renderer.setAnimationLoop(null);
+    document.body.classList.remove('webxr-presenting'); // 還原 body／#three-wrap 的深色底
     // 還原被 fixDomOverlayViewport 強制蓋掉的高度，回到原本 CSS 的 100dvh 規則
     document.documentElement.style.removeProperty('height');
     document.body.style.removeProperty('height');
