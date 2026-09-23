@@ -1791,6 +1791,46 @@ function updateReticleFromHit(hp, hr, t) {
   reticleGridHelper.material.color.setHex(reticleStable ? 0x00ff88 : 0xffaa00);
 }
 
+// 放置完成後的共用狀態重置：兩種 AR 後端都要做，差別只在「誰、什麼時候」呼叫這個函式——
+// 8th Wall／桌機是點按當下就同步呼叫；WebXR 為了正確掛上 anchor（見 webxrRequestPlacement），
+// 要等 anchor 非同步建立完成才呼叫，arAnchorPos 必須在呼叫這個函式之前就已經設好。
+function completePlacement() {
+  // 放置前機身完全靜止（見 animate() 內的 arPlaced 判斷式），這裡仍重置一次移動狀態，
+  // 避免長按重置後重新放置時，殘留前一次飛行的位置／速度造成新錨點對不準 reticle
+  movePos.set(0, 0, 0);
+  velocity.set(0, 0, 0);
+  chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
+  recoilOffsetY = 0;
+  recoilVelY = 0;
+  prevVelYPos = 0;
+  pitchRecoilOffset = 0;
+  pitchRecoilVel = 0;
+  hasStartedMoving = false;
+  arPlaced = true;
+  window.arPlaced = true;
+  chopperShouldBeVisible = true;
+  applyChopperVisibility();
+  // 記錄放置那一刻的定位圈實際半徑，供「儲存目前縮放為預設」反推縮放／定位圈比例用
+  window.lastPlacedReticleRadius = reticle.scale.x;
+  reticle.visible = false;
+  reticlePlane.visible = false;
+  // 放置成功震動確認（僅 Android Chrome 支援，iOS Safari 無此 API 時靜默略過）
+  if ('vibrate' in navigator) navigator.vibrate([15, 30, 15, 30, 80]);
+}
+
+// WebXR 專用的 anchor 狀態（在 _startXR／桌機模式下完全不會用到）：
+// - webxrChopperAnchor：放置後掛在直升機錨點上的真正 XRAnchor，讓錨點跟著 ARCore 修正
+//   SLAM 地圖時一起被更新，而不是像 arAnchorPos 那樣「算一次就凍結」（見下方 _startWebXR
+//   內每幀讀 anchor pose 那段的說明）。
+// - webxrPlacementRequested：使用者點了螢幕要放置，但建立 anchor 需要當下的 XRHitTestResult
+//   物件，touchend 是 DOM 事件、不同步於 XRFrame，沒辦法在這裡直接建立，只能先掛一個旗標，
+//   讓 _startWebXR 的每幀迴圈在下一個有效 frame 裡去真正建立 anchor。
+// - webxrLatestHitResult：每幀迴圈存的「這一幀命中的原始 XRHitTestResult」，要靠它才能呼叫
+//   .createAnchor()（我們自己算好的 reticleSmoothed 座標只是拿來畫圈圈用的平滑值，不能拿來建錨點）。
+let webxrChopperAnchor = null;
+let webxrPlacementRequested = false;
+let webxrLatestHitResult = null;
+
 // 放置（點按地板）／長按重置：8th Wall、WebXR 兩種 AR 後端共用同一套流程，
 // 只依賴 renderer.domElement 的觸控事件與上面 updateReticleFromHit 算出的 reticle 狀態，
 // 不參考任何後端專屬的 API，因此可以直接共用，只呼叫一次避免重複綁定事件。
@@ -1804,6 +1844,12 @@ function attachPlacementHandlers() {
   renderer.domElement.addEventListener('touchend', (e) => {
     // 避免觸碰搖桿區域時也觸發（搖桿在右下，reticle 需可見才放置）
     if (reticle.visible && reticleStable && !arPlaced && window.orientGuideOk) {
+      if (window._arBackend === 'webxr') {
+        // WebXR：不在這裡直接放置，只掛旗標，交給 _startWebXR 的每幀迴圈在下一個有效
+        // XRFrame 內建立真正的 anchor，anchor 建立完成後才會呼叫 completePlacement()
+        webxrPlacementRequested = true;
+        return;
+      }
       arAnchorPos.copy(reticleSmoothed);
       // 只加一個貼地用的極小偏移（避免完全貼合地板造成 z-fighting），不扣掉 chopperPosDebug.y：
       // corePos 每幀都是 arAnchorPos + movePos + chopperPosDebug（見下方 animate() 內的 corePos.set），
@@ -1812,27 +1858,7 @@ function attachPlacementHandlers() {
       // 再手動調整（跟放置當下的值產生差值）才看得出效果。拿掉這個抵銷，讓 Y 跟 X／Z 一致，
       // chopperPosDebug.y 才會是「相對偵測到的地板，永遠有效」的絕對高度偏移。
       arAnchorPos.y += 0.001;
-      // 放置前機身完全靜止（見 animate() 內的 arPlaced 判斷式），這裡仍重置一次移動狀態，
-      // 避免長按重置後重新放置時，殘留前一次飛行的位置／速度造成新錨點對不準 reticle
-      movePos.set(0, 0, 0);
-      velocity.set(0, 0, 0);
-      chopperVisualInit = false; // 重新放置時，機身視覺位置直接對齊新錨點，不從舊位置飛過來
-      recoilOffsetY = 0;
-      recoilVelY = 0;
-      prevVelYPos = 0;
-      pitchRecoilOffset = 0;
-      pitchRecoilVel = 0;
-      hasStartedMoving = false;
-      arPlaced = true;
-      window.arPlaced = true;
-      chopperShouldBeVisible = true;
-      applyChopperVisibility();
-      // 記錄放置那一刻的定位圈實際半徑，供「儲存目前縮放為預設」反推縮放／定位圈比例用
-      window.lastPlacedReticleRadius = reticle.scale.x;
-      reticle.visible = false;
-      reticlePlane.visible = false;
-      // 放置成功震動確認（僅 Android Chrome 支援，iOS Safari 無此 API 時靜默略過）
-      if ('vibrate' in navigator) navigator.vibrate([15, 30, 15, 30, 80]);
+      completePlacement();
     }
   });
 
@@ -1846,6 +1872,12 @@ function attachPlacementHandlers() {
       chopperShouldBeVisible = false;
       applyChopperVisibility();
       resetReticleStability();
+      // WebXR：清掉舊 anchor，重新放置時才會建立一個新的、對準新位置的 anchor
+      if (webxrChopperAnchor) {
+        if (webxrChopperAnchor.delete) { try { webxrChopperAnchor.delete(); } catch (_) {} }
+        webxrChopperAnchor = null;
+      }
+      webxrPlacementRequested = false;
     }, 2000);
   }, { passive: false });
   renderer.domElement.addEventListener('touchend', () => clearTimeout(_holdTimer));
@@ -2501,6 +2533,9 @@ const _startWebXR = async (session) => {
 
     session.addEventListener('end', () => {
       webxrHitTestSource = null;
+      webxrChopperAnchor = null;
+      webxrPlacementRequested = false;
+      webxrLatestHitResult = null;
       window._xrActive = false;
       window._arBackend = null;
       renderer.autoClear = false; // 還原給 8th Wall／桌機模式用的手動 clear 行為
@@ -2533,15 +2568,53 @@ const _startWebXR = async (session) => {
           let statusTxt;
           if (!arPlaced) {
             const results = webxrHitTestSource ? frame.getHitTestResults(webxrHitTestSource) : [];
-            const pose = results.length > 0 ? results[0].getPose(refSpace) : null;
+            webxrLatestHitResult = results.length > 0 ? results[0] : null;
+            const pose = webxrLatestHitResult ? webxrLatestHitResult.getPose(refSpace) : null;
             updateReticleFromHit(
               pose ? pose.transform.position : null,
               pose ? pose.transform.orientation : null,
               performance.now() / 1000
             );
             statusTxt = `#${_frameTick} ${trackingTxt} hit:${results.length}`;
+
+            // 使用者按下放置了（見 attachPlacementHandlers 裡的 touchend），但建立 anchor
+            // 要用「這一幀」的原始 hit test 結果，不能用平滑過的 reticleSmoothed，所以拖到
+            // 這裡、真的有命中結果時才處理；reticleStable 再檢查一次是保險，理論上
+            // touchend 那邊已經檔過一次不穩定的狀態
+            if (webxrPlacementRequested && webxrLatestHitResult && reticleStable) {
+              webxrPlacementRequested = false;
+              const _placedAtPos = reticleSmoothed.clone();
+              webxrLatestHitResult.createAnchor().then((anchor) => {
+                webxrChopperAnchor = anchor;
+                arAnchorPos.copy(_placedAtPos);
+                // 只加一個貼地用的極小偏移（避免完全貼合地板造成 z-fighting），理由跟
+                // 8th Wall 那邊的放置邏輯一樣，見 attachPlacementHandlers 內的說明
+                arAnchorPos.y += 0.001;
+                completePlacement();
+              }).catch((err) => {
+                // 裝置不支援 anchors（optionalFeatures 沒被授與）或建立失敗：退化成舊行為
+                // （固定座標，不會跟著 SLAM 修正），至少不會讓使用者卡在點了沒反應的狀態
+                console.error('建立 WebXR anchor 失敗，退化成固定座標：', err);
+                webxrChopperAnchor = null;
+                arAnchorPos.copy(_placedAtPos);
+                arAnchorPos.y += 0.001;
+                completePlacement();
+              });
+            }
           } else {
-            statusTxt = `#${_frameTick} ${trackingTxt}`;
+            // 已放置：直升機錨點的權威資料來源改成 anchor 的即時 pose（每幀由 ARCore／
+            // WebXR 自動更新、跟著 SLAM 地圖的修正一起走），不再是放置當下算好就凍結的
+            // 固定座標——這就是「走遠會飄、走回來又飄回去」這個問題的正確修法：之前
+            // arAnchorPos 只在放置當下賦值一次，之後 ARCore 做 loop closure 修正相機時，
+            // 這個已經算好的固定點完全不會跟著被修正，才會跟相機的位置對不起來。
+            if (webxrChopperAnchor) {
+              const anchorPose = frame.getPose(webxrChopperAnchor.anchorSpace, refSpace);
+              if (anchorPose) {
+                const p = anchorPose.transform.position;
+                arAnchorPos.set(p.x, p.y + 0.001, p.z);
+              }
+            }
+            statusTxt = `#${_frameTick} ${trackingTxt}${webxrChopperAnchor ? '' : '（無 anchor！）'}`;
           }
           setArDebugStatus(statusTxt);
         } else {
@@ -2608,7 +2681,9 @@ if (navigator.xr && navigator.xr.isSessionSupported) {
       overlay.classList.add('hidden');
       navigator.xr.requestSession('immersive-ar', {
         requiredFeatures: ['hit-test'],
-        optionalFeatures: ['dom-overlay'],
+        // anchors 是選用而非必要：沒有的話退化成放置當下的固定座標（跟舊行為一樣），
+        // 而不是讓整個 session 直接建立失敗——見 _startWebXR 內 createAnchor() 失敗時的 fallback
+        optionalFeatures: ['dom-overlay', 'anchors'],
         domOverlay: { root: document.body },
       }).then((session) => {
         _startWebXR(session);
