@@ -2447,79 +2447,92 @@ const _startWebXR = async (session) => {
   window._xrActive = true;
   window._arBackend = 'webxr';
   setArBackendBadge('AR 後端：WebXR（ARCore）');
-  document.getElementById('camera-bg').style.display = 'none';
-  window.setChopperScale(window.AR_DEFAULT_SCALE);
-  // 拿掉 body／#three-wrap 的不透明底色，見上方 CSS .webxr-presenting 規則的說明
-  document.body.classList.add('webxr-presenting');
-
-  // 全域的 renderer.autoClear = false 是為了 8th Wall（見該行註解）：手動 clear() 才不會
-  // 蓋掉它自己畫的相機畫面。WebXR 沒有這回事，而且 session 進行中 render() 才會綁定真正
-  // 的 XR framebuffer，開回 autoClear 讓 render() 自己在那個 framebuffer 上做清除
-  // （見下方 animate() 尾端的說明），不然畫面會維持系統預設的不透明黑色，看不到鏡頭透視。
-  renderer.autoClear = true;
-
-  renderer.xr.setReferenceSpaceType('local');
-  await renderer.xr.setSession(session);
-
-  // 已知的 dom-overlay 陷阱：Chrome 進入 immersive-ar 時，疊在畫面上的 DOM UI（domOverlay:
-  // { root: document.body }）有時候不會重新量測 window.innerHeight，導致 #screen-live
-  // 這類 position:fixed;inset:0 的版面被鎖在進場前（含網址列等瀏覽器介面）的較矮視窗高度，
-  // 搖桿／按鈕全部被擠在畫面上半部，下面多出來的高度沒有任何 DOM 內容覆蓋，會直接露出
-  // 沒被 UI／黑色清除蓋住的鏡頭透視，看起來像整個螢幕被切成「上面介面、下面純相機」兩半。
-  // 用裝置實際螢幕高度（window.screen.height，不受這個 viewport 量測問題影響）強制校正，
-  // 並多補幾次時間點觸發，涵蓋 Chrome 延遲更新內部版面的情況。
-  const fixDomOverlayViewport = () => {
-    document.documentElement.style.setProperty('height', window.screen.height + 'px', 'important');
-    document.body.style.setProperty('height', window.screen.height + 'px', 'important');
-    window.dispatchEvent(new Event('resize'));
-  };
-  fixDomOverlayViewport();
-  requestAnimationFrame(fixDomOverlayViewport);
-  setTimeout(fixDomOverlayViewport, 300);
-  setTimeout(fixDomOverlayViewport, 1000);
-
-  const viewerSpace = await session.requestReferenceSpace('viewer');
-  webxrHitTestSource = await session.requestHitTestSource({ space: viewerSpace });
-
-  session.addEventListener('end', () => {
-    webxrHitTestSource = null;
-    window._xrActive = false;
-    window._arBackend = null;
-    renderer.autoClear = false; // 還原給 8th Wall／桌機模式用的手動 clear 行為
-    renderer.setAnimationLoop(null);
-    document.body.classList.remove('webxr-presenting'); // 還原 body／#three-wrap 的深色底
-    document.getElementById('webxr-hit-debug').classList.add('hidden');
-    setArBackendBadge(null);
-    // 還原被 fixDomOverlayViewport 強制蓋掉的高度，回到原本 CSS 的 100dvh 規則
-    document.documentElement.style.removeProperty('height');
-    document.body.style.removeProperty('height');
-  });
-
-  attachPlacementHandlers();
-
   const hitDebugEl = document.getElementById('webxr-hit-debug');
 
-  // renderer.setAnimationLoop 取代原本的 requestAnimationFrame 迴圈：XR session 進行中，
-  // three.js 會在每幀呼叫這個 callback 並帶入當幀的 XRFrame，session 結束後（frame 為
-  // undefined／null）也還是會繼續呼叫，等同一般 rAF 迴圈，不需要另外處理「結束後怎麼辦」。
-  renderer.setAnimationLoop((timestamp, frame) => {
-    if (frame && !arPlaced) {
-      const refSpace = renderer.xr.getReferenceSpace();
-      const results = webxrHitTestSource ? frame.getHitTestResults(webxrHitTestSource) : [];
-      const pose = results.length > 0 ? results[0].getPose(refSpace) : null;
-      updateReticleFromHit(
-        pose ? pose.transform.position : null,
-        pose ? pose.transform.orientation : null,
-        performance.now() / 1000
-      );
-      // 暫時性除錯：確認 hit-test 本身有沒有在動，還是慢慢移動手機掃描還沒掃到平面
-      hitDebugEl.textContent = `hit-test 結果：${results.length}（移動手機慢慢掃描桌面/地板）`;
-      hitDebugEl.classList.remove('hidden');
-    } else {
+  // 暫時性除錯：整段設定流程包 try/catch，任何一步（尤其是下面幾個 await）默默失敗
+  // 都會直接顯示在畫面上，不然畫面上什麼提示都不會有、也看不出到底卡在哪一步
+  try {
+    document.getElementById('camera-bg').style.display = 'none';
+    window.setChopperScale(window.AR_DEFAULT_SCALE);
+    // 拿掉 body／#three-wrap 的不透明底色，見上方 CSS .webxr-presenting 規則的說明
+    document.body.classList.add('webxr-presenting');
+
+    // 全域的 renderer.autoClear = false 是為了 8th Wall（見該行註解）：手動 clear() 才不會
+    // 蓋掉它自己畫的相機畫面。WebXR 沒有這回事，而且 session 進行中 render() 才會綁定真正
+    // 的 XR framebuffer，開回 autoClear 讓 render() 自己在那個 framebuffer 上做清除
+    // （見下方 animate() 尾端的說明），不然畫面會維持系統預設的不透明黑色，看不到鏡頭透視。
+    renderer.autoClear = true;
+
+    renderer.xr.setReferenceSpaceType('local');
+    await renderer.xr.setSession(session);
+
+    // 已知的 dom-overlay 陷阱：Chrome 進入 immersive-ar 時，疊在畫面上的 DOM UI（domOverlay:
+    // { root: document.body }）有時候不會重新量測 window.innerHeight，導致 #screen-live
+    // 這類 position:fixed;inset:0 的版面被鎖在進場前（含網址列等瀏覽器介面）的較矮視窗高度，
+    // 搖桿／按鈕全部被擠在畫面上半部，下面多出來的高度沒有任何 DOM 內容覆蓋，會直接露出
+    // 沒被 UI／黑色清除蓋住的鏡頭透視，看起來像整個螢幕被切成「上面介面、下面純相機」兩半。
+    // 用裝置實際螢幕高度（window.screen.height，不受這個 viewport 量測問題影響）強制校正，
+    // 並多補幾次時間點觸發，涵蓋 Chrome 延遲更新內部版面的情況。
+    const fixDomOverlayViewport = () => {
+      document.documentElement.style.setProperty('height', window.screen.height + 'px', 'important');
+      document.body.style.setProperty('height', window.screen.height + 'px', 'important');
+      window.dispatchEvent(new Event('resize'));
+    };
+    fixDomOverlayViewport();
+    requestAnimationFrame(fixDomOverlayViewport);
+    setTimeout(fixDomOverlayViewport, 300);
+    setTimeout(fixDomOverlayViewport, 1000);
+
+    const viewerSpace = await session.requestReferenceSpace('viewer');
+    webxrHitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+
+    session.addEventListener('end', () => {
+      webxrHitTestSource = null;
+      window._xrActive = false;
+      window._arBackend = null;
+      renderer.autoClear = false; // 還原給 8th Wall／桌機模式用的手動 clear 行為
+      renderer.setAnimationLoop(null);
+      document.body.classList.remove('webxr-presenting'); // 還原 body／#three-wrap 的深色底
       hitDebugEl.classList.add('hidden');
-    }
-    animate();
-  });
+      setArBackendBadge(null);
+      // 還原被 fixDomOverlayViewport 強制蓋掉的高度，回到原本 CSS 的 100dvh 規則
+      document.documentElement.style.removeProperty('height');
+      document.body.style.removeProperty('height');
+    });
+
+    attachPlacementHandlers();
+
+    // renderer.setAnimationLoop 取代原本的 requestAnimationFrame 迴圈：XR session 進行中，
+    // three.js 會在每幀呼叫這個 callback 並帶入當幀的 XRFrame，session 結束後（frame 為
+    // undefined／null）也還是會繼續呼叫，等同一般 rAF 迴圈，不需要另外處理「結束後怎麼辦」。
+    renderer.setAnimationLoop((timestamp, frame) => {
+      try {
+        if (frame && !arPlaced) {
+          const refSpace = renderer.xr.getReferenceSpace();
+          const results = webxrHitTestSource ? frame.getHitTestResults(webxrHitTestSource) : [];
+          const pose = results.length > 0 ? results[0].getPose(refSpace) : null;
+          updateReticleFromHit(
+            pose ? pose.transform.position : null,
+            pose ? pose.transform.orientation : null,
+            performance.now() / 1000
+          );
+          // 暫時性除錯：確認 hit-test 本身有沒有在動，還是慢慢移動手機掃描還沒掃到平面
+          hitDebugEl.textContent = `hit-test 結果：${results.length}（移動手機慢慢掃描桌面/地板）`;
+          hitDebugEl.classList.remove('hidden');
+        } else {
+          hitDebugEl.classList.add('hidden');
+        }
+        animate();
+      } catch (err) {
+        console.error('WebXR 每幀迴圈出錯：', err);
+        hitDebugEl.textContent = '每幀迴圈出錯：' + (err && err.message ? err.message : err);
+        hitDebugEl.classList.remove('hidden');
+      }
+    });
+  } catch (err) {
+    console.error('WebXR 啟動流程失敗：', err);
+    setArBackendBadge('AR 後端：WebXR 啟動失敗 → ' + (err && err.message ? err.message : err));
+  }
 };
 
 // 8thWall 已載入 → 直接啟動；否則等待 xrloaded 事件
