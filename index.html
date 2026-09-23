@@ -1840,10 +1840,13 @@ function attachPlacementHandlers() {
   _placementHandlersAttached = true;
 
   // 點按螢幕 → 放置直升機到 reticle 位置（reticle 由 onUpdate 即時更新）
-  // 需同時滿足：地板已偵測到（reticle 可見）＋ 偵測結果已連續多幀穩定＋手機角度已符合姿態引導的要求
+  // 需同時滿足：地板已偵測到（reticle 可見）＋ 偵測結果已連續多幀穩定
+  // ＋（暫時註解掉）手機角度已符合姿態引導的要求 —— 排查漂移問題期間先拿掉這個限制，
+  // 方便隨時重新放置測試，之後確定要不要恢復再打開；恢復方式：把下面 if 判斷式的
+  // `&& window.orientGuideOk` 註解拿掉即可，姿態引導 UI 本身邏輯完全沒動，只是不再拿來擋放置。
   renderer.domElement.addEventListener('touchend', (e) => {
     // 避免觸碰搖桿區域時也觸發（搖桿在右下，reticle 需可見才放置）
-    if (reticle.visible && reticleStable && !arPlaced && window.orientGuideOk) {
+    if (reticle.visible && reticleStable && !arPlaced /* && window.orientGuideOk */) {
       if (window._arBackend === 'webxr') {
         // WebXR：不在這裡直接放置，只掛旗標，交給 _startWebXR 的每幀迴圈在下一個有效
         // XRFrame 內建立真正的 anchor，anchor 建立完成後才會呼叫 completePlacement()
