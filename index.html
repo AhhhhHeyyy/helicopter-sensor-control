@@ -370,11 +370,11 @@
   點一下畫面進入 AR<br><span style="font-size:13px;opacity:0.75;">（WebXR 測試路徑，失敗會自動改用原本的 AR 模式）</span>
 </div>
 
-<!-- 暫時性除錯用：WebXR hit-test 每幀結果數量，尚未放置時顯示，確認地板/平面掃描到了沒 -->
-<div id="webxr-hit-debug" class="hidden" style="position:fixed;top:calc(env(safe-area-inset-top,0px) + 56px);left:50%;transform:translateX(-50%);z-index:9998;background:rgba(0,0,0,0.6);color:#4dd9f0;font-size:12px;padding:4px 10px;border-radius:8px;pointer-events:none;"></div>
-
-<!-- 目前用哪個 AR 後端（8th Wall／WebXR／桌機），見 setArBackendBadge()，任何模式下都會顯示 -->
-<div id="ar-backend-badge" class="hidden" style="position:fixed;top:calc(env(safe-area-inset-top,0px) + 10px);left:50%;transform:translateX(-50%);z-index:9997;background:rgba(0,0,0,0.65);color:#facc15;font-size:11px;font-weight:600;padding:3px 10px;border-radius:999px;pointer-events:none;letter-spacing:0.02em;"></div>
+<!-- 暫時性除錯用：AR 後端＋WebXR 追蹤/hit-test 狀態，合併成一塊、放左上角「調整面板」
+     按鈕下方、靠左對齊——原本分開放在畫面上方置中的兩塊，跟置中的姿態引導文字疊在一起，
+     實機截圖證實會互相蓋住看不清楚；這裡改成不透明底色＋固定位置，session 全程持續顯示，
+     不會因為某幀短暫沒資料就被藏起來閃爍 -->
+<div id="ar-debug-panel" class="hidden" style="position:fixed;top:calc(env(safe-area-inset-top,0px) + 50px);left:10px;z-index:9997;background:rgba(0,0,0,0.85);color:#facc15;font-size:11px;font-weight:600;padding:6px 10px;border-radius:8px;pointer-events:none;line-height:1.6;max-width:60vw;"></div>
 
 <!-- 畫面2：即時顯示 -->
 <div id="screen-live">
@@ -2349,13 +2349,26 @@ function animate() {
   renderer.render(scene, camera);
 }
 
-// 畫面上常駐顯示目前用哪個 AR 後端，方便實機測試時一眼確認（尤其是 WebXR 備援失敗、
-// 自動退回 8th Wall 的情況，光看畫面效果不一定分得出來）
-function setArBackendBadge(text) {
-  const el = document.getElementById('ar-backend-badge');
-  if (!text) { el.classList.add('hidden'); return; }
-  el.textContent = text;
+// 畫面上常駐顯示目前用哪個 AR 後端＋（WebXR 專用）追蹤／hit-test 狀態，合併成同一塊
+// 兩行文字，方便實機測試時一眼確認（尤其是 WebXR 備援失敗、自動退回 8th Wall 的情況，
+// 光看畫面效果不一定分得出來），避免像之前分成兩塊各自置中疊在其他 UI 上看不清楚。
+let _arDebugBackendLine = '';
+let _arDebugStatusLine = '';
+function _renderArDebugPanel() {
+  const el = document.getElementById('ar-debug-panel');
+  const lines = [_arDebugBackendLine, _arDebugStatusLine].filter(Boolean);
+  if (lines.length === 0) { el.classList.add('hidden'); return; }
+  el.textContent = lines.join(' ｜ ');
   el.classList.remove('hidden');
+}
+function setArBackendBadge(text) {
+  _arDebugBackendLine = text || '';
+  _arDebugStatusLine = ''; // 換後端／結束時，舊的追蹤狀態一併清掉，避免殘留誤導
+  _renderArDebugPanel();
+}
+function setArDebugStatus(text) {
+  _arDebugStatusLine = text || '';
+  _renderArDebugPanel();
 }
 
 // ── 8thWall AR Pipeline ──────────────────────────────────────
@@ -2447,7 +2460,7 @@ const _startWebXR = async (session) => {
   window._xrActive = true;
   window._arBackend = 'webxr';
   setArBackendBadge('AR 後端：WebXR（ARCore）');
-  const hitDebugEl = document.getElementById('webxr-hit-debug');
+  setArDebugStatus('等待第一幀...');
 
   // 暫時性除錯：整段設定流程包 try/catch，任何一步（尤其是下面幾個 await）默默失敗
   // 都會直接顯示在畫面上，不然畫面上什麼提示都不會有、也看不出到底卡在哪一步
@@ -2493,7 +2506,6 @@ const _startWebXR = async (session) => {
       renderer.autoClear = false; // 還原給 8th Wall／桌機模式用的手動 clear 行為
       renderer.setAnimationLoop(null);
       document.body.classList.remove('webxr-presenting'); // 還原 body／#three-wrap 的深色底
-      hitDebugEl.classList.add('hidden');
       setArBackendBadge(null);
       // 還原被 fixDomOverlayViewport 強制蓋掉的高度，回到原本 CSS 的 100dvh 規則
       document.documentElement.style.removeProperty('height');
@@ -2505,15 +2517,20 @@ const _startWebXR = async (session) => {
     // renderer.setAnimationLoop 取代原本的 requestAnimationFrame 迴圈：XR session 進行中，
     // three.js 會在每幀呼叫這個 callback 並帶入當幀的 XRFrame，session 結束後（frame 為
     // undefined／null）也還是會繼續呼叫，等同一般 rAF 迴圈，不需要另外處理「結束後怎麼辦」。
+    let _frameTick = 0; // 暫時性除錯：數字有沒有在跳，直接證明這個 callback 本身有沒有在跑
+    let _noFrameStreak = 0;
     renderer.setAnimationLoop((timestamp, frame) => {
       try {
+        _frameTick++;
         if (frame) {
+          _noFrameStreak = 0;
           const refSpace = renderer.xr.getReferenceSpace();
           // 暫時性除錯：ARCore 有沒有掉追蹤（viewer pose 拿不到＝這幀完全沒有可信的相機
           // 姿態，等於是「追蹤中斷」的直接證據），跟「有沒有掃到平面」是兩回事，
           // 分開顯示才能判斷「漂移」到底是追蹤本身不穩，還是別的原因
           const viewerPose = frame.getViewerPose(refSpace);
           const trackingTxt = viewerPose ? '追蹤：正常' : '追蹤：中斷／拿不到 pose！';
+          let statusTxt;
           if (!arPlaced) {
             const results = webxrHitTestSource ? frame.getHitTestResults(webxrHitTestSource) : [];
             const pose = results.length > 0 ? results[0].getPose(refSpace) : null;
@@ -2522,19 +2539,22 @@ const _startWebXR = async (session) => {
               pose ? pose.transform.orientation : null,
               performance.now() / 1000
             );
-            hitDebugEl.textContent = `${trackingTxt}｜hit-test 結果：${results.length}（掃桌面/地板，避開螢幕）`;
+            statusTxt = `#${_frameTick} ${trackingTxt} hit:${results.length}`;
           } else {
-            hitDebugEl.textContent = trackingTxt;
+            statusTxt = `#${_frameTick} ${trackingTxt}`;
           }
-          hitDebugEl.classList.remove('hidden');
+          setArDebugStatus(statusTxt);
         } else {
-          hitDebugEl.classList.add('hidden');
+          // 暫時性除錯：這裡故意不隱藏面板——之前「hidden 就完全看不到」的版本沒辦法
+          // 分辨「session 已經死了」還是「這幀剛好沒拿到 frame，下一幀就好了」，
+          // 持續顯示 no-frame 的連續次數，才看得出是偶爾一次還是整個掛掉
+          _noFrameStreak++;
+          setArDebugStatus(`#${_frameTick} 沒有 frame（連續 ${_noFrameStreak} 次）`);
         }
         animate();
       } catch (err) {
         console.error('WebXR 每幀迴圈出錯：', err);
-        hitDebugEl.textContent = '每幀迴圈出錯：' + (err && err.message ? err.message : err);
-        hitDebugEl.classList.remove('hidden');
+        setArDebugStatus('每幀出錯：' + (err && err.message ? err.message : err));
       }
     });
   } catch (err) {
