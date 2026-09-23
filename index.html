@@ -2435,6 +2435,23 @@ const _startWebXR = async (session) => {
   renderer.xr.setReferenceSpaceType('local');
   await renderer.xr.setSession(session);
 
+  // 已知的 dom-overlay 陷阱：Chrome 進入 immersive-ar 時，疊在畫面上的 DOM UI（domOverlay:
+  // { root: document.body }）有時候不會重新量測 window.innerHeight，導致 #screen-live
+  // 這類 position:fixed;inset:0 的版面被鎖在進場前（含網址列等瀏覽器介面）的較矮視窗高度，
+  // 搖桿／按鈕全部被擠在畫面上半部，下面多出來的高度沒有任何 DOM 內容覆蓋，會直接露出
+  // 沒被 UI／黑色清除蓋住的鏡頭透視，看起來像整個螢幕被切成「上面介面、下面純相機」兩半。
+  // 用裝置實際螢幕高度（window.screen.height，不受這個 viewport 量測問題影響）強制校正，
+  // 並多補幾次時間點觸發，涵蓋 Chrome 延遲更新內部版面的情況。
+  const fixDomOverlayViewport = () => {
+    document.documentElement.style.setProperty('height', window.screen.height + 'px', 'important');
+    document.body.style.setProperty('height', window.screen.height + 'px', 'important');
+    window.dispatchEvent(new Event('resize'));
+  };
+  fixDomOverlayViewport();
+  requestAnimationFrame(fixDomOverlayViewport);
+  setTimeout(fixDomOverlayViewport, 300);
+  setTimeout(fixDomOverlayViewport, 1000);
+
   const viewerSpace = await session.requestReferenceSpace('viewer');
   webxrHitTestSource = await session.requestHitTestSource({ space: viewerSpace });
 
@@ -2444,6 +2461,9 @@ const _startWebXR = async (session) => {
     window._arBackend = null;
     renderer.autoClear = false; // 還原給 8th Wall／桌機模式用的手動 clear 行為
     renderer.setAnimationLoop(null);
+    // 還原被 fixDomOverlayViewport 強制蓋掉的高度，回到原本 CSS 的 100dvh 規則
+    document.documentElement.style.removeProperty('height');
+    document.body.style.removeProperty('height');
   });
 
   attachPlacementHandlers();
